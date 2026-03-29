@@ -146,7 +146,7 @@ const server = http.createServer(async (req, res) => {
 function getPort() {
   return new Promise((resolve, reject) => {
     const srv = require('net').createServer();
-    srv.listen(0, '127.0.0.1', () => {
+    srv.listen(0, '0.0.0.0', () => {
       const port = srv.address().port;
       srv.close(() => resolve(port));
     });
@@ -158,7 +158,7 @@ let mainWindow;
 
 app.whenReady().then(async () => {
   const port = await getPort();
-  server.listen(port, '127.0.0.1', () => {
+  server.listen(port, '0.0.0.0', () => {
     console.log(`服务已启动: http://localhost:${port}`);
     console.log(`谜材数据目录: ${CAIZI_DIR}`);
   });

@@ -96,8 +96,16 @@
     font-size: 14px; outline: none; resize: vertical; min-height: 100px; font-family: inherit;
   }
   .caizi-import-row textarea:focus { border-color: #4a90d9; }
-  .caizi-import-row input[type="file"] { padding: 6px 0; font-size: 13px; }
   .caizi-import-hint { font-size: 12px; color: #aaa; margin-top: 4px; }
+
+  .drop-zone {
+    padding: 20px 16px; border: 2px dashed #d0d0d0; border-radius: 8px;
+    text-align: center; color: #bbb; font-size: 14px; cursor: pointer;
+    transition: all 0.2s; background: #fafafa;
+  }
+  .drop-zone:hover, .drop-zone.dragover {
+    border-color: #4a90d9; color: #4a90d9; background: #e8f0fe;
+  }
 
   .caizi-groups { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   .caizi-group-tag {
@@ -194,7 +202,7 @@
       <button class="caizi-btn primary" id="showImportBtn">+ 导入谜材</button>
       <button class="caizi-btn" id="exportCaiziBtn">导出全部</button>
       <button class="caizi-btn" id="importCaiziFileBtn">导入 JSON</button>
-      <input type="file" id="importCaiziFile" accept=".json" style="display:none">
+      <div class="caizi-import-hint" id="jsonDropHint">支持拖入 .json 文件</div>
       <span class="caizi-count" id="caiziSummary"></span>
     </div>
     <div class="caizi-import" id="importPanel">
@@ -209,10 +217,10 @@
         </div>
       </div>
       <div class="caizi-import-row">
-        <label>或导入文件</label>
+        <label>或拖入文件</label>
         <div style="flex:1">
-          <input type="file" id="importFile" accept=".txt,.csv">
-          <div class="caizi-import-hint">支持 .txt 文件（每行一条），UTF-8 编码</div>
+          <div class="drop-zone" id="dropZone">将 .txt 文件拖放到此处</div>
+          <div class="caizi-import-hint">支持 .txt 文件（每行一条），也可直接粘贴到上方文本框</div>
         </div>
       </div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px;">
@@ -239,8 +247,10 @@
   </div>
 </div>
 
+<script src="js/neutralino.js"></script>
 <script>
 const MODE_LABELS = { all: '全部（简体+繁体）', jt: '简体', ft: '繁体' };
+const CAIZI_STORAGE_KEY = 'caiziGroups';
 let currentMode = 'all';
 let currentTab = 'chars';
 let data = {};
@@ -263,19 +273,49 @@ function setInputComps(comps) {
   clearBtn.classList.toggle('visible', comps.length > 0);
 }
 
+// ====== 谜材持久化（Neutralino Storage） ======
+async function loadCaiziData() {
+  try {
+    const raw = await Neutralino.storage.getData(CAIZI_STORAGE_KEY);
+    caiziGroups = JSON.parse(raw);
+  } catch (e) {
+    caiziGroups = {};
+  }
+}
+
+async function persistCaiziData() {
+  await Neutralino.storage.setData(CAIZI_STORAGE_KEY, JSON.stringify(caiziGroups));
+}
+
+async function saveGroup(name, items) {
+  caiziGroups[name] = items;
+  await persistCaiziData();
+}
+
+async function deleteGroup(name) {
+  delete caiziGroups[name];
+  selectedGroups.delete(name);
+  await persistCaiziData();
+}
+
 // ====== 初始化：加载数据 ======
 async function init() {
   try {
-    const [allData, jtData, ftData, strokesData, caiziData] = await Promise.all([
+    Neutralino.init();
+    await Neutralino.events.on('windowClose', () => { Neutralino.app.exit(); });
+  } catch (e) { /* already initialized */ }
+
+  try {
+    const [allData, jtData, ftData, strokesData] = await Promise.all([
       fetch('all.json').then(r => r.json()),
       fetch('jt.json').then(r => r.json()),
       fetch('ft.json').then(r => r.json()),
       fetch('strokes.json').then(r => r.json()),
-      fetch('/api/caizi').then(r => r.json()),
     ]);
     data = { all: allData, jt: jtData, ft: ftData };
     strokeMap = strokesData;
-    caiziGroups = caiziData || {};
+
+    await loadCaiziData();
     selectedGroups = new Set(Object.keys(caiziGroups));
 
     const compSet = new Set();
@@ -288,24 +328,6 @@ async function init() {
   } catch (e) {
     document.getElementById('resultContent').innerHTML = '<div class="empty">数据加载失败: ' + e.message + '</div>';
   }
-}
-
-// ====== 谜材 CRUD（通过 API 持久化到文件） ======
-async function saveGroup(name, items) {
-  await fetch('/api/caizi/save', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, items }),
-  });
-  caiziGroups[name] = items;
-}
-
-async function deleteGroup(name) {
-  await fetch('/api/caizi/delete', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
-  });
-  delete caiziGroups[name];
-  selectedGroups.delete(name);
 }
 
 function renderCaiziGroups() {
@@ -358,7 +380,6 @@ async function doImport(name, items) {
   renderCaiziGroups();
   document.getElementById('importName').value = '';
   document.getElementById('importText').value = '';
-  document.getElementById('importFile').value = '';
   document.getElementById('importPanel').classList.remove('show');
   if (currentTab === 'caizi') searchCaizi();
 }
@@ -486,9 +507,45 @@ document.querySelectorAll('.tab-bar button').forEach(btn => {
 });
 document.getElementById('showImportBtn').addEventListener('click', function() { document.getElementById('importPanel').classList.toggle('show'); });
 document.getElementById('cancelImportBtn').addEventListener('click', function() { document.getElementById('importPanel').classList.remove('show'); });
-document.getElementById('importFile').addEventListener('change', function(e) {
-  const file = e.target.files[0]; if (!file) return;
-  const reader = new FileReader(); reader.onload = ev => { document.getElementById('importText').value = ev.target.result; };
+document.getElementById('importFileBtn').addEventListener('click', function() {
+  alert('请将谜材内容复制粘贴到上方文本框，或将 .txt 文件拖放到导入区域');
+});
+
+// ====== 拖拽导入 .txt 文件 ======
+const dropZone = document.getElementById('dropZone');
+dropZone.addEventListener('dragover', function(e) { e.preventDefault(); this.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', function(e) { e.preventDefault(); this.classList.remove('dragover'); });
+dropZone.addEventListener('drop', function(e) {
+  e.preventDefault(); this.classList.remove('dragover');
+  const file = e.dataTransfer.files[0];
+  if (!file) return;
+  if (!file.name.endsWith('.txt') && !file.name.endsWith('.csv')) { alert('请拖入 .txt 或 .csv 文件'); return; }
+  const reader = new FileReader();
+  reader.onload = function(ev) { document.getElementById('importText').value = ev.target.result; };
+  reader.readAsText(file, 'UTF-8');
+});
+
+// ====== 全局拖拽导入 JSON ======
+document.body.addEventListener('dragover', function(e) { e.preventDefault(); });
+document.body.addEventListener('drop', function(e) {
+  e.preventDefault();
+  const file = e.dataTransfer.files[0];
+  if (!file || !file.name.endsWith('.json')) return;
+  const reader = new FileReader();
+  reader.onload = async function(ev) {
+    try {
+      const imported = JSON.parse(ev.target.result);
+      const count = Object.keys(imported).length;
+      if (count === 0) { alert('文件中没有谜材数据'); return; }
+      const overlap = Object.keys(imported).filter(n => caiziGroups[n]);
+      if (overlap.length > 0 && !confirm(`发现 ${overlap.length} 个同名分组，将覆盖已有数据。继续？`)) return;
+      for (const [name, items] of Object.entries(imported)) await saveGroup(name, items);
+      selectedGroups = new Set(Object.keys(caiziGroups));
+      renderCaiziGroups();
+      if (currentTab === 'caizi') searchCaizi();
+      alert(`已导入 ${count} 组谜材`);
+    } catch (err) { alert('JSON 格式错误：' + err.message); }
+  };
   reader.readAsText(file, 'UTF-8');
 });
 document.getElementById('confirmImportBtn').addEventListener('click', function() {
@@ -501,29 +558,53 @@ document.getElementById('confirmImportBtn').addEventListener('click', function()
   const items = [...new Set(text.split(sep).map(s => s.trim()).filter(Boolean))];
   doImport(name, items);
 });
-document.getElementById('exportCaiziBtn').addEventListener('click', function() {
+document.getElementById('exportCaiziBtn').addEventListener('click', async function() {
   if (Object.keys(caiziGroups).length === 0) { alert('暂无谜材数据可导出'); return; }
-  const blob = new Blob([JSON.stringify(caiziGroups, null, 2)], { type: 'application/json' });
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = '谜材数据.json'; a.click();
-  URL.revokeObjectURL(a.href);
+  try {
+    const downloadsPath = await Neutralino.os.getPath('downloads');
+    const filePath = downloadsPath + '/谜材数据.json';
+    await Neutralino.filesystem.writeFile(filePath, JSON.stringify(caiziGroups, null, 2));
+    alert('已导出到：' + filePath);
+  } catch (e) {
+    // 降级：在终端显示 JSON
+    alert('导出失败，请手动复制谜材数据');
+  }
 });
-document.getElementById('importCaiziFileBtn').addEventListener('click', function() { document.getElementById('importCaiziFile').click(); });
-document.getElementById('importCaiziFile').addEventListener('change', function(e) {
-  const file = e.target.files[0]; if (!file) return;
-  const reader = new FileReader();
-  reader.onload = async function(ev) {
-    try {
-      const imported = JSON.parse(ev.target.result);
-      const count = Object.keys(imported).length;
-      if (count === 0) { alert('文件中没有谜材数据'); return; }
-      const overlap = Object.keys(imported).filter(n => caiziGroups[n]);
-      if (overlap.length > 0 && !confirm(`发现 ${overlap.length} 个同名分组，将覆盖已有数据。继续？`)) return;
-      for (const [name, items] of Object.entries(imported)) await saveGroup(name, items);
-      selectedGroups = new Set(Object.keys(caiziGroups));
-      renderCaiziGroups();
-    } catch (err) { alert('文件格式错误：' + err.message); }
-  };
-  reader.readAsText(file, 'UTF-8'); this.value = '';
+document.getElementById('importCaiziFileBtn').addEventListener('click', function() {
+  alert('请将 .json 文件直接拖放到应用窗口即可导入');
+});
+
+// ====== Neutralino macOS 快捷键修复 ======
+document.addEventListener('keydown', function(e) {
+  const mod = e.metaKey || e.ctrlKey;
+  if (!mod) return;
+  if (e.key === 'v') {
+    // Cmd/Ctrl+V: 手动触发粘贴
+    e.preventDefault();
+    const el = document.activeElement;
+    if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
+      navigator.clipboard.readText().then(text => {
+        const start = el.selectionStart;
+        const end = el.selectionEnd;
+        el.value = el.value.slice(0, start) + text + el.value.slice(end);
+        el.selectionStart = el.selectionEnd = start + text.length;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      }).catch(() => {});
+    }
+  } else if (e.key === 'a') {
+    // Cmd/Ctrl+A: 全选
+    const el = document.activeElement;
+    if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
+      e.preventDefault();
+      el.select();
+    }
+  } else if (e.key === 'c' || e.key === 'x') {
+    // Cmd/Ctrl+C/X: 复制/剪切（浏览器默认行为通常正常，此处保险处理）
+    const el = document.activeElement;
+    if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
+      // 让浏览器默认行为处理，不阻止
+    }
+  }
 });
 
 init();
