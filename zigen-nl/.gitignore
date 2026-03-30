@@ -1,9 +1,10 @@
-# Developer tools' files
-.lite_workspace.lua
+# Neutralinojs runtime binaries (downloaded via `neu update`)
+bin/
 
-# Neutralinojs binaries and builds
-/dist
+# Neutralinojs build output
+dist/
 
-# Neutralinojs related files
+# Neutralinojs runtime data
 .storage
+.tmp
 *.log
