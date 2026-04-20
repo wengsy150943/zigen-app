@@ -2,6 +2,8 @@
 
 根据汉字字根（拆字组件）反查对应汉字，支持谜材检索。
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 ## 功能
 
 - **单字检索**：输入字根（如 `口 木 一`），查找包含这些字根的所有汉字
@@ -88,3 +90,19 @@ python3 scripts/invert_index.py data/chaizi-all-expanded.txt
 # 生成 JSON（同时更新 zigen-nl/resources/ 下的数据）
 python3 scripts/gen_json.py
 ```
+
+## 许可证
+
+本项目采用 [MIT 许可证](LICENSE) 开源。
+
+## 致谢
+
+本项目使用了以下开源资源：
+
+- **[漢語拆字字典](https://github.com/kfcd/chaizi)** by [開放詞典](https://github.com/kfcd)  
+  拆字映射表数据源，采用 [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/deed.zh) 许可证
+
+- **[ChineseCixing](https://github.com/liuhuanyong/ChineseCixing)** by [liuhuanyong](https://github.com/liuhuanyong)  
+  汉字笔画数查询接口
+
+感谢以上项目的作者和贡献者！
