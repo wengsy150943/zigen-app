@@ -37,8 +37,12 @@
    * 拆解：字素字原地淡出，部件从字中心飞散到落点。
    * opts: {charId, parts:[{id,glyph}], spread, drop, duration}
    *  - 默认按圆周散落（spread 为半径）;
-   *  - 提供 drop:{y, gap?} 时统一拆到字下方横排：部件 i 落在
-   *    (cx + (i-(n-1)/2)*gap, drop.y)，gap 缺省 64。
+   *  - 提供 drop:{y, gap?, centerX?} 时统一拆到字下方横排：部件 i 落在
+   *    ((centerX ?? cx) + (i-(n-1)/2)*gap, drop.y)，gap 缺省 64。
+   *    centerX 只改**落点**的中心：部件仍从字心 (cx,cy) 起飞，但整组落到不越界的位置
+   *    —— 来源字贴近画布边缘、部件又多时，按字心排开会把两侧部件推出画布。
+   *  - 提供 drop:{positions:[{x,y}…]} 时逐部件指定落点（呼叫方自己算好每个部件的去处，
+   *    例如"停到它即将被合并进去的那次合并的落点附近"），此时忽略 y/gap/centerX。
    */
   function sceneDecompose(opts) {
     const dur = opts.duration != null ? opts.duration : 1.3;
@@ -54,14 +58,17 @@
         const cx = opts.cx != null ? opts.cx : c.x;
         const cy = opts.cy != null ? opts.cy : c.y;
         const spread = opts.spread != null ? opts.spread : 120;
-        const drop = opts.drop; // {y, gap?} 统一拆到字下方横排
+        const drop = opts.drop; // {y, gap?, centerX?} 统一拆到字下方横排，或 {positions} 逐部件指定
         const uFly = clamp01(u / 0.55);
         for (let i = 0; i < n; i++) {
           const ang = -Math.PI / 2 + (i * 2 * Math.PI) / n;
-          const tx = drop
-            ? cx + (i - (n - 1) / 2) * (drop.gap != null ? drop.gap : 64)
-            : cx + Math.cos(ang) * spread;
-          const ty = drop ? drop.y : cy + Math.sin(ang) * spread;
+          const pinned = drop && drop.positions ? drop.positions[i] : null;
+          const tx = pinned ? pinned.x
+            : drop
+              ? (drop.centerX != null ? drop.centerX : cx) + (i - (n - 1) / 2) * (drop.gap != null ? drop.gap : 64)
+              : cx + Math.cos(ang) * spread;
+          const ty = pinned ? pinned.y
+            : drop ? drop.y : cy + Math.sin(ang) * spread;
           const ent = ctx.ensure(parts[i].id, {
             glyph: parts[i].glyph, x: cx, y: cy, opacity: 0, scale: 1,
             color: opts.partColor || '#0c8599', fontSize: opts.partFontSize || 44,

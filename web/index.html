@@ -214,31 +214,20 @@
     transition: transform var(--dur), box-shadow var(--dur), border-color var(--dur);
   }
   .chip:hover { transform: translateY(-2px); }
-  .chip.active { box-shadow: 0 0 0 3px rgba(25,27,31,.16); }
+  .chip.tagged { box-shadow: 0 0 0 3px rgba(25,27,31,.10); }
+  /* 未标注的字：虚线边，提示"还没定身份" */
+  .chip:not(.tagged) { border-style: dashed; }
   .chip .chip-role {
     position: absolute; bottom: -8px; right: -6px; font-size: 10px; font-weight: 600;
     color: #fff; padding: 2px 6px; border-radius: 99px; line-height: 1.2; white-space: nowrap;
   }
 
-  /* ---------- 字卡：点谜面字就展开，只放身份（零件在下面的字素池里） ---------- */
-  .char-card {
-    border: 1px solid var(--line-strong); border-left: 3px solid var(--ink);
-    border-radius: var(--radius-sm); background: var(--surface-2);
-    padding: 11px 12px 12px; margin-top: 4px;
-  }
-  .cc-head { display: flex; align-items: baseline; gap: 9px; margin-bottom: 10px; }
-  .cc-glyph {
-    font-family: var(--font-serif); font-size: 26px; line-height: 1; font-weight: 700;
-    color: var(--ink); flex: none;
-  }
-  .cc-label { font-size: 12px; color: var(--muted); flex: 1; min-width: 0; }
-  .cc-close {
-    border: 1px solid var(--line-strong); background: var(--surface); color: var(--muted);
-    border-radius: 6px; width: 24px; height: 24px; cursor: pointer; flex: none;
-    display: inline-flex; align-items: center; justify-content: center; font-size: 13px; line-height: 1;
-  }
-  .cc-close:hover { color: var(--ink); border-color: var(--ink); }
-  /* 身份：三段式分段控件（只有一个当前生效） */
+  /* ---------- 身份笔：常驻在谜面字块上方，选一支笔 → 点字即设置 ---------- */
+  .role-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 11px; }
+  .role-bar[hidden] { display: none; }   /* display:flex 会盖掉 [hidden] 的默认 display:none */
+  .role-bar .role-btns { flex: 1 1 300px; margin-bottom: 0; }
+  .role-tip { font-size: 11.5px; color: var(--muted); flex: 1 1 130px; min-width: 0; }
+  /* 身份：两段式分段控件（同一时刻只有一支笔在手） */
   .role-btns { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-bottom: 10px; }
   .role-btn {
     --rc: var(--ink-2);
@@ -356,6 +345,14 @@
   .cand-chip:hover { background: var(--surface-2); border-color: var(--ink); }
   .cand-chip.exact { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
   .btn-row { display: flex; gap: 8px; margin-top: 9px; }
+
+  /* 拖框划选时的橡皮筋框（跟着鼠标画，松手即消失） */
+  .marquee {
+    position: fixed; z-index: 80; pointer-events: none; border-radius: 6px;
+    border: 1.5px dashed var(--ink); background: rgba(25,27,31,.08);
+  }
+  /* 拖动时不要把零件里的字刷蓝 */
+  .sel-chip { user-select: none; }
 
   .merges-wrap { margin-top: 10px; }
   .merges-empty { font-size: 12.5px; color: var(--muted); }
@@ -590,16 +587,17 @@
       <section class="step" id="step2" data-step="2" data-state="locked">
         <div class="step-head">
           <span class="step-no">02</span>
-          <h2>点字，拼出谜底的一段</h2>
+          <h2>选身份、点字，拼出谜底的一段</h2>
           <span class="step-meta" id="step2Meta"></span>
           <span class="step-check" aria-hidden="true">✓</span>
         </div>
         <div class="step-body">
-          <p class="hint" style="margin-bottom:10px">点一个谜面字 → 在这里改它的身份；要用的部件在下面的<b>字素池</b>里挑，<b>可以跨字混选</b>。<b>默认就按「字素」处理，不改也能直接拼。</b></p>
-          <div class="chips-wrap" id="chipsWrap"></div>
+          <p class="hint" style="margin-bottom:10px">先选一支<b>身份笔</b>，再点谜面里的字 —— 点一下就定。标成<b>字素</b>的字会在下面的字素池里拆出零件，<b>衬字</b>只给谜面行配色、不参与拆合。</p>
 
-          <!-- 字卡（renderCharCard 写入）：只放身份，部件统一进下面的字素池 -->
-          <div id="charCard"></div>
+          <!-- 身份笔（renderRoleBar 写入）：常驻在字块上方，选笔 → 点字 -->
+          <div class="role-bar" id="roleBar" hidden></div>
+
+          <div class="chips-wrap" id="chipsWrap"></div>
 
           <!-- 字素池：所有字素拆出的部件集中在这里，跨字混选不必来回切字卡 -->
           <section class="pool" id="poolWrap">
@@ -745,7 +743,7 @@
     <p class="help-sub">不用懂术语，跟着左边的编号走就行。想先看效果，直接点下面的示例。</p>
     <ol class="help-steps">
       <li><span class="n">1</span><div><b>输入谜面</b><span>只填谜面那一句，比如「十八口」。谜底知道就先填上（拼出来的字会直接落到对应位置），留空也行。</span></div></li>
-      <li><span class="n">2</span><div><b>点字，拼出谜底的一段</b><span>点一个谜面字可以改它的身份。身份只有两种 —— <b>字素</b>是被拆开拼的字（默认），<b>衬字</b>是不参与拆合的字（离合动作「合、出、去」、方位取舍「头、尾、边」）。所有字素拆出的部件都摊在下面的<b>字素池</b>里，<b>哪个字出零件就点哪个，可以跨字混选</b>；凑齐后点合并就拼成一个新字：选 1 个＝直接取用，选 2 个以上＝组合。</span></div></li>
+      <li><span class="n">2</span><div><b>选身份、点字，拼出谜底的一段</b><span>先点一支<b>身份笔</b>（<b>字素</b>＝被拆开拼的字，<b>衬字</b>＝不参与拆合的字，比如离合动作「合、出、去」、方位取舍「头、尾、边」），再点谜面里的字 —— 点一下就定，再点一次取消。一句纯拆字谜面用「全部设为字素」一键标完。所有字素拆出的部件都摊在下面的<b>字素池</b>里，<b>哪个字出零件就点哪个，可以跨字混选</b>（按住左键拖一个框还能一次选一片）；凑齐后点合并就拼成一个新字：选 1 个＝直接取用，选 2 个以上＝组合。</span></div></li>
       <li><span class="n">3</span><div><b>填谜底、导出</b><span>填上谜底生成动画，拼出来的字会直接落在谜底对应的位置。右侧预览满意后选 GIF 导出，发到公众号或聊天工具都是透明背景。</span></div></li>
     </ol>
     <div class="help-foot">

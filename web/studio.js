@@ -174,7 +174,7 @@
       merges: [],
       mergeSeq: 0,
       answer: '',
-      pairs: {},        // 合成结果 id -> 谜底字槽位下标（显式配对；空时走自动配对）
+      pairs: {},        // 合成结果 id -> 谜底字槽位下标（允许同一槽位挂多个 id：双扣。空时走自动配对）
       pairTouched: false, // 用户是否手动改过配对（改为 true 后不再自动配对）
       unpaired: {},     // 合成结果 id -> true：用户手动"解除"过它，不再自动补位
       manual: {},       // 字 id -> [部件字形…]：用户手写的拆法（拆字库没收录或拆得不对时用）
@@ -382,34 +382,39 @@ function itemLabel(st, id) {
     return st.merges.filter(m => !consumed.has(m.id));
   }
 
-  // 自动配对（默认）：字形相同的优先（一槽一结果），余下按顺序填入空槽。
+  // 自动配对（默认）：字形相同的优先。
+  // 双扣：两个合成结果字形都等于某谜底字时，两者都落到该槽（同字形可叠加到同一槽）；
+  // 不同字形的结果绝不抢占已被别的字形占用的槽，只会落到空槽，避免误配。
   // 多段谜底示例: 木+口=杏、艹+化=花，谜底「杏花」→ 杏→槽0、花→槽1。
   function autoPair(st) {
     const pairs = {};
     if (!st.answer) return pairs;
     const ansChars = [...st.answer];
-    const usedSlots = new Set();
+    const slotGlyph = {};        // 槽位 -> 已落位的字形（同字形可叠加，异字形互斥）
     const usedMerges = new Set();
     const live = liveMerges(st);
     for (const m of live) {
-      const idx = ansChars.findIndex((ch, i) => ch === m.glyph && !usedSlots.has(i));
-      if (idx >= 0) { pairs[m.id] = idx; usedSlots.add(idx); usedMerges.add(m.id); }
+      let idx = -1;
+      for (let i = 0; i < ansChars.length; i++) {
+        if (ansChars[i] === m.glyph && (slotGlyph[i] == null || slotGlyph[i] === m.glyph)) { idx = i; break; }
+      }
+      if (idx >= 0) { pairs[m.id] = idx; slotGlyph[idx] = m.glyph; usedMerges.add(m.id); }
     }
     let k = 0;
     for (const m of live) {
       if (usedMerges.has(m.id)) continue;
-      while (k < ansChars.length && usedSlots.has(k)) k++;
+      while (k < ansChars.length && slotGlyph[k] != null) k++;
       if (k >= ansChars.length) break;
-      pairs[m.id] = k; usedSlots.add(k); usedMerges.add(m.id); k++;
+      pairs[m.id] = k; slotGlyph[k] = m.glyph; usedMerges.add(m.id); k++;
     }
     return pairs;
   }
 
-  // 显式配对：把合成结果指定到某个谜底字槽位（同一槽位只能有一个结果）
+  // 显式配对：把合成结果指定到某个谜底字槽位。
+  // 双扣：允许同一槽位挂多个结果（不再把先来的挤掉）；拿起一个结果连到已有来源的行 = 叠加。
   function pairResult(st, mergeId, slotIdx) {
     if (!st.merges.some(m => m.id === mergeId)) return false;
     if (slotIdx < 0 || slotIdx >= [...st.answer].length) return false;
-    for (const id in st.pairs) if (st.pairs[id] === slotIdx) delete st.pairs[id];
     st.pairs[mergeId] = slotIdx;
     if (st.unpaired) delete st.unpaired[mergeId];
     st.pairTouched = true;
@@ -423,17 +428,17 @@ function itemLabel(st, id) {
     st.pairTouched = true;
   }
 
-  // 清理失效配对（合并已删 / 已被别的合并吸收 / 槽位越界 / 槽位重复只留先配的）
+  // 清理失效配对（合并已删 / 已被别的合并吸收 / 槽位越界）。
+  // 注意：不再按槽位去重 —— 双扣允许同一槽位挂多个结果，全部保留。
   function prunePairs(st) {
     const out = {};
-    const used = new Set();
     const an = [...st.answer].length;
     const alive = new Set(liveMerges(st).map(m => m.id));
     for (const id in st.pairs) {
       const slot = st.pairs[id];
       if (!alive.has(id)) continue;   // 中间产物会被吸收，不能占谜底位
-      if (slot < 0 || slot >= an || used.has(slot)) continue;
-      out[id] = slot; used.add(slot);
+      if (slot < 0 || slot >= an) continue;
+      out[id] = slot;
     }
     st.pairs = out;
     if (st.unpaired) {
@@ -453,7 +458,13 @@ function itemLabel(st, id) {
    */
   function effectivePairs(st) {
     prunePairs(st);
-    if (!st.pairTouched) return autoPair(st);
+    if (!st.pairTouched) {
+      // 未手动改过时，自动配对即权威状态，持久化回 st.pairs：
+      // 这样用户第一次手动改配（pairResult 把 pairTouched 置 true）时，st.pairs 已含
+      // 全部自动配对结果，双扣的多个结果不会被丢掉（否则只有最后显式那一个被保留）。
+      st.pairs = autoPair(st);
+      return st.pairs;
+    }
     const pairs = Object.assign({}, st.pairs);
     const usedSlots = new Set(Object.values(pairs));
     const refused = st.unpaired || {};
@@ -546,6 +557,157 @@ function itemLabel(st, id) {
     const charPos = new Map();
     for (const it of initialItems) charPos.set(it.id, { x: it.x, y: it.y });
 
+    // ---- 行2 落点规划：先算清楚"每个合成结果落在哪、字素的部件落到哪" ——
+    //      部件的落点要用它（部件停到"它即将被合并进去的地方"），所以整块排在拆解场景之前。----
+    const mk = st.merges.length;
+    const ansChars = [...st.answer].map((ch, i) => ({ id: 'a' + i, glyph: ch }));
+    const an = ansChars.length;
+    const gridMode = mk > perLine2 || an > perLine2;
+    // 网格布点：第 i 个单元（共 total 个）按每行 perLine2 个排布
+    const gridPos = (i, total) => {
+      const lj = Math.floor(i / perLine2);
+      const col = i % perLine2;
+      const count = Math.min(perLine2, total - lj * perLine2);
+      const { spacing, x0 } = lineLayout(count);
+      return { x: x0 + col * spacing, y: y2(lj) };
+    };
+
+    // 合成结果 ↔ 谜底字配对（显式优先，否则自动）。配对决定"这个合成结果落在哪一个谜底槽位"。
+    const pairs = effectivePairs(st);
+    const pairedSlots = new Set();
+    for (const id in pairs) pairedSlots.add(pairs[id]);
+    // 双扣：一个谜底槽位可能挂多个合成结果（同一字被两条路径扣到）。
+    // slotToIds[槽位] = 指向它的合成结果 id 列表（按合并顺序）。
+    const slotToIds = {};
+    for (const m of st.merges) {
+      const s = pairs[m.id];
+      if (s == null) continue;
+      (slotToIds[s] = slotToIds[s] || []).push(m.id);
+    }
+    // 谁会被后续合并当输入 —— 决定它是"中间产物（跟随消费者的落点）"还是"独立结果"
+    const consumerOf = new Map();
+    for (const m of st.merges) for (const id of m.partIds) consumerOf.set(id, m.id);
+    // 未配对、也不会被后续合并消耗的结果 = "没扣上的结果"（最典型的失手操作：合成了谜底里
+    // 没有的字）。它们原先与谜底槽位挤在同一排（都取 y2(0)），常常落到同一个坐标上，
+    // 甚至正压在那个"最后要从这里弹出来的谜底字"上面。现在统一排到谜底行**下方**。
+    const strayIds = new Set();
+    {
+      const anchored = new Set();
+      for (const m of st.merges) if (pairs[m.id] != null) anchored.add(m.id);
+      for (let i = st.merges.length - 1; i >= 0; i--) {
+        const m = st.merges[i];
+        if (anchored.has(m.id)) continue;
+        const next = consumerOf.get(m.id);
+        if (next && anchored.has(next)) { anchored.add(m.id); continue; }
+        strayIds.add(m.id);
+      }
+    }
+    const coreRows = Math.max(1, Math.ceil(Math.max(mk, an) / perLine2));
+    const strayRows = strayIds.size ? 1 : 0;
+    // 行2 总行数（决定画布高度）
+    const rows2 = coreRows + strayRows;
+
+    // 谜底槽位 / "未配对结果层"的坐标
+    const as = an > 1 ? Math.min(150, usable / an) : 0;
+    const ax0 = W / 2 - ((an - 1) * as) / 2;
+    const slotPos = j => (gridMode ? gridPos(j, an) : { x: ax0 + j * as, y: y2(0) });
+    const mergePos = i => (gridMode
+      ? gridPos(i, mk)
+      : { x: cfg.mergeX + (i - (mk - 1) / 2) * (mk > 1 ? Math.min(90, usable / (mk - 1)) : 0), y: y2(0) });
+    // 未配对结果的落点：排在谜底行下方的网格里，横向居中铺开
+    const strayPosAt = k => {
+      const lj = Math.floor(k / perLine2);
+      const col = k % perLine2;
+      const count = Math.min(perLine2, strayIds.size - lj * perLine2);
+      const { spacing, x0 } = lineLayout(count);
+      return { x: x0 + col * spacing, y: y2(coreRows + lj) };
+    };
+    const strayPosOf = new Map();
+    {
+      let k = 0;
+      for (const m of st.merges) if (strayIds.has(m.id)) strayPosOf.set(m.id, strayPosAt(k++));
+    }
+
+    // 落点规划：每个合成结果的最终位置在它**第一次出现时**就定好，之后一步都不再移动。
+    //   - 配对到谜底槽        -> 该槽位坐标（谜底顺序由槽位表达）
+    //       · 双扣（同一槽多个结果）：在其周围横向错位排布；由其中一个（字形即谜底字者，
+    //         否则最后一个）在槽位中心显示谜底字，其余显示自身字形，直观表达"两条路径汇到这字"。
+    //   - 会被后面的合并当输入 -> 跟随那个合并的落点（继续在谜底位上拼，而不是先弹在
+    //                            中间再横滑过去 —— 否则"拼出字"和"位移到谜底"是两段运动）
+    //   - 两者都不是          -> 未配对结果层（strayPosOf：排在谜底行下方）
+    // 反向遍历：输入一定先于消费者创建，所以从后往前扫一遍就能把链式依赖传递完。
+    const landPos = new Map();     // 合并 id -> {x,y}
+    const atAnswer = new Map();    // 合并 id -> 是否落在谜底位上
+    // 双扣组几何：一个谜底槽挂 n 个结果时围绕槽位横向铺开。
+    //   间距由**槽位间距**决定 —— an>1 时必须容进本槽的宽度，否则会压到相邻槽位；
+    //   单槽时不受邻槽约束，按字号给足间距。字号取 min(mergeFS, 间距*0.96)，
+    //   即"字号不超过间距"，组内两个字永远不会叠在一起
+    //   （旧值 min(mergeFS*0.82,120)=44px 配 54px 字号，双扣那两个字是叠着的）。
+    const dkGeom = slot => {
+      const group = slotToIds[slot];
+      const n = group.length;
+      if (n <= 1) return { group, n, centerIdx: 0, gap: 0, fs: mergeFS };
+      const budget = an > 1 ? as : n * mergeFS * 1.06;
+      const gap = Math.max(16, budget / n);
+      const ci = group.findIndex(id => {
+        const mm = st.merges.find(x => x.id === id);
+        return mm && mm.glyph === ansChars[slot].glyph;
+      });
+      return { group, n, centerIdx: ci >= 0 ? ci : n - 1, gap, fs: Math.min(mergeFS, gap * 0.96) };
+    };
+    const dkPos = (slot, id) => {
+      const base = slotPos(slot);
+      const g = dkGeom(slot);
+      if (g.n <= 1) return base;
+      return { x: base.x + (g.group.indexOf(id) - g.centerIdx) * g.gap, y: base.y };
+    };
+    // 双扣里"这个槽位的答案单元" = 显示谜底字的那个（字形即谜底字者，否则最后一个）
+    const dkIsCenter = (slot, id) => {
+      const g = dkGeom(slot);
+      return g.n <= 1 || g.group.indexOf(id) === g.centerIdx;
+    };
+    for (const m of st.merges) {
+      const slot = pairs[m.id];
+      if (slot == null) continue;
+      landPos.set(m.id, dkPos(slot, m.id));
+      atAnswer.set(m.id, true);
+    }
+    for (let i = st.merges.length - 1; i >= 0; i--) {
+      const m = st.merges[i];
+      if (pairs[m.id] != null) continue;   // 已定为落位
+      const next = consumerOf.get(m.id);
+      if (next && landPos.has(next)) { landPos.set(m.id, landPos.get(next)); atAnswer.set(m.id, atAnswer.get(next)); continue; }
+      landPos.set(m.id, strayIds.has(m.id) ? strayPosOf.get(m.id) : mergePos(i));
+      atAnswer.set(m.id, false);
+    }
+
+    // 部件落点：停到"它自己那次合并的落点"附近 —— 同一次合并的多个部件围绕该落点横向铺开。
+    //   为什么不再"按来源字横排到行2 首行"：只要一个字的部件分属**多次**合并，它就要在行2
+    //   停好几段动画，先落位的合成结果会直接压在还在等待的部件上（官方示例「千古」里就叠着：
+    //   r0 落在 245，等待中的 m0-p1 停在 281，两个 54px 的字重了 36px）。停到各自的合并点后，
+    //   部件被消耗的那一刻正是结果出现的那一刻，两者不会并存。
+    //   全局一起算（不同字的部件可能进同一次合并），所以任意两个部件也不会落到同一处。
+    const partIdSet = new Set(st.parts.map(p => p.id));
+    const partGapOf = new Map();      // 合并 id -> 组内间距（0 = 只有一个部件）
+    const partLandPos = new Map();    // 部件 id -> {x,y}
+    for (const m of st.merges) {
+      const ids = m.partIds.filter(id => partIdSet.has(id));
+      if (!ids.length) continue;
+      const land = landPos.get(m.id) || { x: W / 2, y: y2(0) };
+      const n = ids.length;
+      // 间距不超过"本槽的宽度"（an>1 按槽距，单槽时这一排只有它自己，用整行可用宽度）
+      const gap = n > 1 ? Math.min(72, (an > 1 ? as : usable) / n) : 0;
+      partGapOf.set(m.id, gap);
+      const half = ((n - 1) * gap) / 2;
+      // 整组钳进可用区（左端有行标签，越界会压到标签上）
+      const cxg = Math.max(pad + half + partFS / 2,
+        Math.min(W - pad - half - partFS / 2, land.x));
+      ids.forEach((id, k) => {
+        const off = n > 1 ? (k - (n - 1) / 2) * gap : 0;
+        partLandPos.set(id, { x: cxg + off, y: land.y });
+      });
+    }
+
     // 1) 字素拆解（仅当该字的部件确实参与了合并：只拆出被使用的部件，
     //    未使用的部件不进动画；字素整字直接参与合并时则不拆解）
     const usedPartIds = new Set();
@@ -559,79 +721,39 @@ function itemLabel(st, id) {
         .filter(p => usedPartIds.has(p.id));
       if (!parts.length) continue; // 部件未被使用 -> 不拆解
       const pos = charPos.get(c.id) || { x: W / 2, y: cfg.charY };
-      const li = mianLines.findIndex(l => l.includes(c));
-      const lineCount = li >= 0 ? mianLines[li].length : 1;
-      // 部件统一拆到行2首行横排（落点 = 合并层首行，与"合并/中间产物"同一行）
-      const pn = parts.length;
-      const effSp = lineCount > 1 ? lineLayout(lineCount).spacing : 240; // 单字时部件组可更宽
-      const pgap = pn > 1 ? Math.max(0, Math.min(72, (effSp - 44) / (pn - 1))) : 0;
+      // 部件字号不得大于它所在那组的间距，否则组内两个部件会叠在一起
+      let pfs = partFS;
+      for (const p of parts) {
+        const g = partGapOf.get(consumerOf.get(p.id));
+        if (g > 0) pfs = Math.min(pfs, g * 0.96);
+      }
+      pfs = Math.max(18, Math.round(pfs));
       scenes.push(E.sceneDecompose({
         charId: c.id, parts,
         cx: pos.x, cy: pos.y,
-        drop: { y: y2(0), gap: pgap },
-        partColor: '#0c8599', partFontSize: partFS,
+        // 逐个部件给落点：都还在行2，各自停在自己那次合并的落点附近
+        drop: { positions: parts.map(p => partLandPos.get(p.id) || { x: W / 2, y: y2(0) }) },
+        partColor: '#0c8599', partFontSize: pfs,
       }));
     }
 
     // 2) 依次合并（按用户顺序，必须保持顺序：后面的合并会用到前面的合成结果）。
     //    配对过的合成结果**直接落在它的谜底槽位上** —— 不再先弹在中间、
     //    再横移过去。顺序由槽位本身表达，省掉整个"位移"阶段。
-    //    未配对的结果放在合并层（单行时以 mergeX 为中心 90px 错开；超行容量则换行成网格）。
-    const mk = st.merges.length;
-    const ansChars = [...st.answer].map((ch, i) => ({ id: 'a' + i, glyph: ch }));
-    const an = ansChars.length;
-    const gridMode = mk > perLine2 || an > perLine2;
-    // 网格布点：第 i 个单元（共 total 个）按每行 perLine2 个排布
-    const gridPos = (i, total) => {
-      const lj = Math.floor(i / perLine2);
-      const col = i % perLine2;
-      const count = Math.min(perLine2, total - lj * perLine2);
-      const { spacing, x0 } = lineLayout(count);
-      return { x: x0 + col * spacing, y: y2(lj) };
-    };
-    // 行2 总行数（决定画布高度）
-    const rows2 = Math.max(1, Math.ceil(Math.max(mk, an) / perLine2));
-    const mergePos = i => (gridMode
-      ? gridPos(i, mk)
-      : { x: cfg.mergeX + (i - (mk - 1) / 2) * (mk > 1 ? Math.min(90, usable / (mk - 1)) : 0), y: y2(0) });
-
-    // 3) 合成结果 ↔ 谜底字配对（显式优先，否则自动）。
-    //    配对决定"这个合成结果落在哪一个谜底槽位"，也就是它在动画里的最终位置；
-    //    没有配对但会被后续合并用掉的中间产物，位置由下面的反向遍历传给它的消费者。
-    const as = an > 1 ? Math.min(150, usable / an) : 0;
-    const ax0 = W / 2 - ((an - 1) * as) / 2;
-    const slotPos = j => (gridMode ? gridPos(j, an) : { x: ax0 + j * as, y: y2(0) });
-    const pairs = effectivePairs(st);
-    const pairedSlots = new Set(Object.values(pairs));
-
-    // 落点规划：每个合成结果的最终位置在它**第一次出现时**就定好，之后一步都不再移动。
-    //   - 配对到谜底槽        -> 该槽位坐标（谜底顺序由槽位表达）
-    //   - 会被后面的合并当输入 -> 跟随那个合并的落点（继续在谜底位上拼，而不是先弹在
-    //                            中间再横滑过去 —— 否则"拼出字"和"位移到谜底"是两段运动）
-    //   - 两者都不是          -> 合并层（mergePos）
-    // 反向遍历：输入一定先于消费者创建，所以从后往前扫一遍就能把链式依赖传递完。
-    const consumerOf = new Map();
-    for (const m of st.merges) for (const id of m.partIds) consumerOf.set(id, m.id);
-    const landPos = new Map();     // 合并 id -> {x,y}
-    const atAnswer = new Map();    // 合并 id -> 是否落在谜底位上
-    for (let i = st.merges.length - 1; i >= 0; i--) {
-      const m = st.merges[i];
-      const slot = pairs[m.id];
-      if (slot != null) { landPos.set(m.id, slotPos(slot)); atAnswer.set(m.id, true); continue; }
-      const next = consumerOf.get(m.id);
-      if (next && landPos.has(next)) { landPos.set(m.id, landPos.get(next)); atAnswer.set(m.id, atAnswer.get(next)); continue; }
-      landPos.set(m.id, mergePos(i)); atAnswer.set(m.id, false);
-    }
+    //    落点已在上面算好（landPos）。
     st.merges.forEach(m => {
       const slot = pairs[m.id];
       const p = landPos.get(m.id);
+      const dg = slot != null ? dkGeom(slot) : null;
+      // 落位显示：单来源与双扣的"中心"都显示**该槽位的谜底字**（手动配对也不弄反谜底顺序）；
+      // 双扣的非中心来源显示自身字形（舌/辛 各自飞到该字位，两条路径都看得见）。
+      const glyph = slot == null ? m.glyph
+        : (dkIsCenter(slot, m.id) ? ansChars[slot].glyph : m.glyph);
       const sc = E.sceneMerge({
         partIds: m.partIds,
-        // 落位的合成结果显示**该槽位的谜底字**：配对语义是"这次合并填哪个谜底槽"，
-        // 因此即使合成结果字与谜底字写法不同（手动配对），谜底顺序也不会被弄反。
-        result: { id: m.id, glyph: slot != null ? ansChars[slot].glyph : m.glyph },
+        result: { id: m.id, glyph },
         cx: p.x, cy: p.y,
-        color: ANSWER_COLOR, fontSize: mergeFS,
+        color: ANSWER_COLOR, fontSize: dg ? dg.fs : mergeFS,
       });
       sc.landsOnAnswer = atAnswer.get(m.id); // 供行标签定位"谜底开始成形"的时刻
       scenes.push(sc);
@@ -696,7 +818,9 @@ function itemLabel(st, id) {
     tl.answerUnits = {};
     for (const m of st.merges) {
       const s = pairs[m.id];
-      if (s != null) tl.answerUnits[s] = m.id;
+      if (s == null) continue;
+      // 双扣：由显示谜底字的那个结果当答案单元（其余呈现在它两侧）
+      if (dkIsCenter(s, m.id)) tl.answerUnits[s] = m.id;
     }
     for (let i = 0; i < an; i++) if (tl.answerUnits[i] == null) tl.answerUnits[i] = ansChars[i].id;
     tl.rows = {

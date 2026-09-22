@@ -3,8 +3,8 @@
  *
  * 工作流（选定式，无拖拽）:
  *   1. 输入谜面 → 逐字显示为可点击字块
- *   2. 点字 → 定身份（字素 / 衬字），身份绑定颜色
- *   3. 字素自动拆解出部件 → 点选可合成对象 → 合并（候选/手填合成字）
+ *   2. 选一支身份笔（字素 / 衬字）→ 点字即定身份，身份绑定颜色（载入时不预设身份）
+ *   3. 字素自动拆解出部件 → 点选（或拖框划选）可合成对象 → 合并（候选/手填合成字）
  *   4. 填谜底 → 合成结果↔谜底字配对（多段谜底）→ 生成动画 → 预览 → 导出
  *
  * 引导层（v0.2）:
@@ -41,7 +41,8 @@ const CONFIG = {
 //   zi（字素）= 参与拆合；ci（衬字）= 不参与拆合，只决定谜面行的配色（教学用）。
 // 谜界会把"不拆的字"再细分为抱合字（离合动作）与指示字（方位取舍），但本工具对这两者
 // 完全同构，分出来没有对应操作；而且有谜家明确反对把指示字并进"抱合字"（概念扩大化），
-// 故采用中性的伞形词「衬字」。分类整体可选：载入谜面时全部默认成「字素」。
+// 故采用中性的伞形词「衬字」。分类由用户点选决定：载入谜面时**不预设任何字的身份**，
+// 先拿一支身份笔（默认「字素」），再点字 —— 点一下就定。
 // color 用于描边/字形；deep 是同色系压暗一档的色调，用来承载文字
 //（白底上的文字色 / 色底上的白字底色），两者都保证 ≥4.5:1。
 const ROLE = {
@@ -68,7 +69,7 @@ const S = {
   loop: false,
   scale: 1,
   selected: [],       // 待合并选中 id
-  openCharId: null,   // 当前选中的谜面字（决定字卡身份与池子里高亮的那一行）
+  roleMode: 'zi',     // 当前拿着的身份笔：'zi' / 'ci' / null。选一支再点字，点一下就定
   partPicker: null,   // 展开了「选部件」字根面板的字 id
   pairPick: null,     // 配对面板中选中的合成结果 id
   timeline: null,
@@ -79,7 +80,7 @@ let work = null;      // 制作状态（Studio.createState 的产物）
 const $ = id => document.getElementById(id);
 const DOM = {
   inputMian: $('inputMian'), btnMian: $('btnMian'),
-  chipsWrap: $('chipsWrap'), charCard: $('charCard'),
+  chipsWrap: $('chipsWrap'), roleBar: $('roleBar'),
   btnDemo: $('btnDemo'),
   btnAllZi: $('btnAllZi'),
   poolWrap: $('poolWrap'), poolMeta: $('poolMeta'), poolHint: $('poolHint'),
@@ -224,10 +225,10 @@ function gotoStep(n) {
 }
 
 // ---------------------------------------------------------------- 谜面工作台（①②合流）
-/** 一切"谜面 → 部件 → 合并"的改动都走这里：重建字块、字卡、字素池、托盘与合并记录 */
+/** 一切"谜面 → 部件 → 合并"的改动都走这里：重建身份笔、字块、字素池、托盘与合并记录 */
 function renderWorkspace() {
+  renderRoleBar();
   renderChips();
-  renderCharCard();
   renderPool();
   renderTray();
   renderMerges();   // 内部会调 renderPairPanel + renderFlow
@@ -245,11 +246,8 @@ function startMian() {
   // 谜底在 ① 就一起填（可留空）：填了的话，每次合并出的字会直接落到它对应的谜底位，
   // 不必等到最后再来配对。这里**不能清空输入框** —— 它现在是 ① 的常驻字段。
   work.answer = DOM.answerInput.value.trim();
-  // 分类是可选的：默认全部按「字素」处理，于是"不标完就走不动"的门槛直接消失。
-  // 想把某个字标成「衬字」，点开那个字再改即可（只为配色与讲解，不影响拆合）。
-  for (const c of work.chars) Studio.assignRole(work, c.id, 'zi');
+  // 载入后**不预设任何字的身份**：先选一支身份笔（默认已经拿着「字素」），再点字 —— 点一下就定。
   S.selected = [];
-  S.openCharId = work.chars.length ? work.chars[0].id : null;
   S.pairPick = null;
   S.partPicker = null;
   S.timeline = null;
@@ -289,95 +287,112 @@ function renderAnswerLine() {
   }
 }
 
-function renderChips() {
-  DOM.chipsWrap.innerHTML = '';
-  if (!work) return;
-  for (const c of work.chars) {
-    const open = S.openCharId === c.id;
-    const chip = el('button', 'chip' + (open ? ' active' : ''));
-    chip.type = 'button';
-    chip.dataset.id = c.id;
-    chip.innerHTML = `<span class="chip-glyph">${esc(c.char)}</span>`;
-    chip.style.borderColor = c.role === 'none' ? '' : ROLE[c.role].color;
-    chip.style.color = c.role === 'none' ? '' : ROLE[c.role].color;
-    chip.title = `点我展开：改身份。要用的部件在下面的字素池里挑。当前身份：${ROLE[c.role].label}`;
-    chip.setAttribute('aria-expanded', open ? 'true' : 'false');
-    chip.setAttribute('aria-label',
-      `谜面第 ${work.chars.indexOf(c) + 1} 个字「${c.char}」，身份 ${ROLE[c.role].label}${open ? '，已展开' : ''}`);
-    if (c.role !== 'none') {
-      const tag = el('span', 'chip-role', ROLE[c.role].label);
-      tag.style.background = ROLE[c.role].deep;
-      chip.appendChild(tag);
-    }
-    chip.addEventListener('click', () => {
-      S.openCharId = open ? null : c.id;
-      renderChips();
-      renderCharCard();
-      renderPool();
-      if (!open) {
-        // 点字就是"用这个字"，顺势把字素池里对应那一行带进视野（长谜面时不必自己找）
-        const blk = DOM.partsWrap.querySelector(`.part-block[data-char-id="${c.id}"]`);
-        if (blk) scrollToEl(blk, 'center');
-      }
-      setStatus(open
-        ? '已收起「' + c.char + '」。'
-        : (c.role === 'zi'
-          ? `已选中「${c.char}」：它拆出的部件在下面的字素池里（已高亮那一行）。`
-          : `已展开「${c.char}」：它当前是「${ROLE[c.role].label}」，不参与拆合，字素池里没有它的零件。`));
-    });
-    DOM.chipsWrap.appendChild(chip);
-  }
-}
+/**
+ * 身份笔（常驻在谜面字块上方）：先在这里选一支笔（字素 / 衬字），再去点谜面里的字 ——
+ * 点一下就定，不用先展开字卡。再点一次笔 = 放下笔（此时点字不会改任何东西）。
+ */
+function renderRoleBar() {
+  if (!DOM.roleBar) return;
+  DOM.roleBar.innerHTML = '';
+  if (!work) { DOM.roleBar.hidden = true; return; }
+  DOM.roleBar.hidden = false;
 
-/** 展开的字卡：只放身份（分段控件）。部件统一在下面的字素池里挑，避免"部件跟着字跑" */
-function renderCharCard() {
-  DOM.charCard.innerHTML = '';
-  if (!work) return;
-  const c = work.chars.find(x => x.id === S.openCharId);
-  if (!c) {
-    DOM.charCard.appendChild(el('p', 'hint', '点上面任意一个字，在这里改它的身份；要用的部件去下面的字素池里挑。'));
-    return;
-  }
-  const card = el('div', 'char-card');
-
-  const head = el('div', 'cc-head');
-  head.appendChild(el('span', 'cc-glyph', esc(c.char)));
-  head.appendChild(el('span', 'cc-label', '它在谜里的身份'));
-  const close = el('button', 'cc-close', '×');
-  close.type = 'button';
-  close.setAttribute('aria-label', '收起这个字');
-  close.addEventListener('click', () => { S.openCharId = null; renderChips(); renderCharCard(); renderPool(); });
-  head.appendChild(close);
-  card.appendChild(head);
-
-  // 身份：两段式分段控件。只有「字素」参与拆合，另一类只影响谜面行配色。
-  const roleBtns = el('div', 'role-btns');
-  roleBtns.id = 'roleBtns';
-  roleBtns.setAttribute('role', 'group');
-  roleBtns.setAttribute('aria-label', `「${c.char}」的身份`);
-  for (const key of ['ci', 'zi']) {
-    const active = c.role === key;
-    const btn = el('button', 'role-btn');
+  const btns = el('div', 'role-btns');
+  btns.id = 'roleBtns';
+  btns.setAttribute('role', 'group');
+  btns.setAttribute('aria-label', '身份笔：选一个再点谜面里的字');
+  for (const key of ['zi', 'ci']) {
+    const on = S.roleMode === key;
+    const btn = el('button', 'role-btn' + (on ? ' on' : ''));
     btn.type = 'button';
     btn.dataset.role = key;
     btn.style.setProperty('--rc', ROLE[key].color);
     btn.style.setProperty('--rc-deep', ROLE[key].deep);
-    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
     btn.innerHTML = `<span class="role-name">${ROLE[key].label}</span><span class="role-desc">${esc(ROLE[key].desc)}</span>`;
-    btn.title = `${ROLE[key].label}：${ROLE[key].eg}（改身份会清掉用到这个字的合并）`;
-    btn.addEventListener('click', () => assignRole(key));
-    roleBtns.appendChild(btn);
+    btn.title = on
+      ? `已拿着「${ROLE[key].label}」笔，点谜面里的字即可套用；再点这里放下笔`
+      : `${ROLE[key].label}：${ROLE[key].eg}（拿起这支笔，再点字）`;
+    btn.addEventListener('click', () => {
+      S.roleMode = on ? null : key;
+      renderRoleBar();
+      renderChips();
+      setStatus(S.roleMode
+        ? `已拿起「${ROLE[S.roleMode].label}」笔 —— 点谜面里的字就设为它。`
+        : '已放下笔。想改身份就再选一支。', true);
+    });
+    btns.appendChild(btn);
   }
-  card.appendChild(roleBtns);
+  DOM.roleBar.appendChild(btns);
 
-  if (c.role === 'zi') {
-    card.appendChild(el('p', 'cc-note',
-      `「${c.char}」是「字素」，它的部件在下面的字素池里 —— 找标着「${c.char}」的那一行。`));
-  } else {
-    card.appendChild(el('p', 'cc-note',
-      `「${ROLE[c.role].label}」只在谜面行出现、给动画配色，不参与拆合，所以在字素池里没有它的零件。点上面的「字素」可以改回可拆状态。`));
+  const tip = S.roleMode
+    ? `拿着「${ROLE[S.roleMode].label}」笔：点字即设置，点已标的字可取消`
+    : '选一支笔，再点字';
+  DOM.roleBar.appendChild(el('span', 'role-tip', tip));
+}
+
+/** 谜面字块：本身只回答"这个字现在是什么身份"，点一下就套用当前拿着的笔 */
+function renderChips() {
+  DOM.chipsWrap.innerHTML = '';
+  if (!work) return;
+  for (const c of work.chars) {
+    const tagged = c.role !== 'none';
+    const chip = el('button', 'chip' + (tagged ? ' tagged' : ''));
+    chip.type = 'button';
+    chip.dataset.id = c.id;
+    chip.innerHTML = `<span class="chip-glyph">${esc(c.char)}</span>`;
+    if (tagged) {
+      chip.style.borderColor = ROLE[c.role].color;
+      chip.style.color = ROLE[c.role].color;
+      const tag = el('span', 'chip-role', ROLE[c.role].label);
+      tag.style.background = ROLE[c.role].deep;
+      chip.appendChild(tag);
+    }
+    const pen = S.roleMode ? ROLE[S.roleMode].label : null;
+    chip.title = pen
+      ? (c.role === S.roleMode ? `「${c.char}」已是${pen} —— 再点一下取消` : `点一下：把「${c.char}」设为${pen}`)
+      : `「${c.char}」当前身份：${ROLE[c.role].label}（先在上面选一支笔才能改）`;
+    chip.setAttribute('aria-label',
+      `谜面第 ${work.chars.indexOf(c) + 1} 个字「${c.char}」，身份 ${ROLE[c.role].label}`);
+    chip.addEventListener('click', () => applyRole(c));
+    DOM.chipsWrap.appendChild(chip);
   }
-  DOM.charCard.appendChild(card);
+}
+
+/** 点一个谜面字：拿当前这支笔给它上色；笔与字身份相同时再点 = 取消（回到未标注） */
+function applyRole(c) {
+  if (!work) return;
+  if (!S.roleMode) {
+    setStatus('先在上面选一支笔（字素 / 衬字），再点字。', false);
+    return;
+  }
+  const prev = c.role;
+  const next = c.role === S.roleMode ? 'none' : S.roleMode;
+  const affected = mergesUsingChar(work, c.id);
+  Studio.assignRole(work, c.id, next);
+  for (const id of affected) Studio.deleteMergeCascade(work, id);
+  S.selected = [];
+  renderWorkspace();
+  renderPairPanel();
+  invalidateTimeline();
+
+  if (next === 'none') {
+    setStatus(`已取消「${c.char}」的身份（回到未标注）。`, true);
+    return;
+  }
+  const base = `「${c.char}」已设为「${ROLE[next].label}」。`;
+  const tail = affected.length ? `同时清掉了用到这个字的 ${affected.length} 次合并。` : '';
+  setStatus(base + tail, true, {
+    label: '撤销这一步',
+    fn: () => {
+      Studio.assignRole(work, c.id, prev);
+      renderWorkspace();
+      renderPairPanel();
+      invalidateTimeline();
+      setStatus(`已撤销：「${c.char}」回到${prev === 'none' ? '未标注' : '「' + ROLE[prev].label + '」'}。`, true);
+    },
+  });
+  // 这里刻意不滚动：标字素是连着点好几个字的动作，每次都把屏幕拽走反而打断手感
 }
 
 /**
@@ -401,7 +416,7 @@ function renderPool() {
   if (DOM.poolHint) DOM.poolHint.hidden = !!zis.length;
   if (!zis.length) {
     DOM.partsWrap.appendChild(el('p', 'cc-note',
-      '池子还是空的 —— 点上面任意一个字，把身份设成「字素」，它拆出的部件就会出现在这里。'));
+      '池子还是空的 —— 拿起「字素」笔，再点谜面里的字，它拆出的部件就会出现在这里（一次全标就点下面的「全部设为字素」）。'));
     return;
   }
   const used = Studio.usedIdsOf(work);
@@ -431,7 +446,7 @@ function poolBlock(c, used) {
   const vs = Studio.variantsOf(work, c.id);
   const mine = !!(work.manual && work.manual[c.id]);
 
-  const block = el('div', 'part-block' + (S.openCharId === c.id ? ' active' : ''));
+  const block = el('div', 'part-block');
   block.dataset.charId = c.id;
 
   const titleRow = el('div', 'part-block-title');
@@ -488,7 +503,7 @@ function addPartInput(c) {
   const input = el('input', 'decomp-input de-add');
   input.type = 'text';
   input.placeholder = '+ 再写一个';
-  input.title = '写部件后回车即可添加，可以连着写（「木口」或「木 口」都行）';
+  input.title = '写部件后回车、或点到别处即可添加，可以连着写（「木口」或「木 口」都行）';
   input.setAttribute('aria-label', `给「${c.char}」添加部件`);
 
   const submit = () => {
@@ -496,13 +511,15 @@ function addPartInput(c) {
     if (!parts.length) return;
     input.value = '';
     appendManualParts(c, parts);
-    focusAddInput(c);                        // 焦点留在输入框，接着写下一个
   };
 
   input.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); submit(); }
+    if (e.key === 'Enter') { e.preventDefault(); submit(); focusAddInput(c); }  // 回车＝继续写下一个
     if (e.key === 'Escape') { e.preventDefault(); input.value = ''; input.blur(); }
   });
+  // 失焦即加入：写完随手点别处也算数，不必记得回车
+  // （Esc 会先把 value 清空，所以"想放弃"时这里是空的，不会误加）
+  input.addEventListener('blur', () => { submit(); });
   return input;
 }
 
@@ -645,6 +662,88 @@ function syncSelChips() {
   }
 }
 
+/**
+ * 字素池拖框划选：按住左键从第一个零件拖到最后一个，框住的零件一次全选（Shift 拖 = 追加）。
+ * 只认鼠标 —— 触屏上拖动要留给页面滚动。没拖动（只是点一下）仍走单击切换，老行为不变。
+ */
+function initMarquee() {
+  const wrap = DOM.partsWrap;
+  if (!wrap) return;
+  const THRESH = 6;                 // 小于这个位移算"点击"，不进入框选
+  let box = null, sx = 0, sy = 0, moved = false, downChip = null, add = false, swallow = false;
+
+  /** 与框相交且可选的零件（按池子里的 DOM 顺序，于是表达式顺序稳定） */
+  const hitIds = r => {
+    const out = [];
+    for (const chip of wrap.querySelectorAll('.sel-chip')) {
+      if (chip.disabled) continue;                 // 已用的零件跳过
+      const b = chip.getBoundingClientRect();
+      if (b.right > r.left && b.left < r.right && b.bottom > r.top && b.top < r.bottom) {
+        out.push(chip.dataset.chipId);
+      }
+    }
+    return out.slice(0, 6);                        // 与单击同一条上限
+  };
+
+  const apply = r => {
+    const ids = hitIds(r);
+    S.selected = add ? [...new Set([...S.selected, ...ids])].slice(0, 6) : ids;
+    syncSelChips();     // 不重建池子：拖动时节点保持稳定
+    renderTray();
+  };
+
+  const onMove = e => {
+    const x = e.clientX, y = e.clientY;
+    if (!moved && Math.abs(x - sx) < THRESH && Math.abs(y - sy) < THRESH) return;
+    if (!moved) {
+      moved = true;
+      box = el('div', 'marquee');
+      document.body.appendChild(box);
+      if (!add) { S.selected = []; }               // 重新划 = 重选（Shift 才是追加）
+    }
+    const r = { left: Math.min(sx, x), top: Math.min(sy, y), right: Math.max(sx, x), bottom: Math.max(sy, y) };
+    box.style.left = r.left + 'px';
+    box.style.top = r.top + 'px';
+    box.style.width = (r.right - r.left) + 'px';
+    box.style.height = (r.bottom - r.top) + 'px';
+    apply(r);
+  };
+
+  const onUp = () => {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointercancel', onUp);
+    if (box) { box.remove(); box = null; }
+    if (!moved) return;
+    // 起点落在零件上时，浏览器随后还会补一个 click —— 只吞"起点那一个零件上的那一次"，
+    // 否则框选结果会被这一次点击改掉；此后零件上的点击照旧（见下面的 click 捕获）
+    swallow = !!downChip;
+    const n = S.selected.length;
+    setStatus(n
+      ? `框选了 ${n} 个零件：${S.selected.map(id => Studio.itemLabel(work, id)).join(' + ')}。`
+      : '框里没有可选零件 —— 从零件上开始拖。', n > 0);
+  };
+
+  wrap.addEventListener('pointerdown', e => {
+    if (e.pointerType !== 'mouse' || e.button !== 0) return;
+    // 落在输入框 / 小按钮 / ✕ / 字根面板上时不启动框选（那里是要打字或删部件）
+    if (e.target.closest('input, .mini-btn, .de-x, .de-pick-btn, .de-picker')) return;
+    sx = e.clientX; sy = e.clientY;
+    moved = false;
+    add = e.shiftKey;
+    downChip = e.target.closest('.sel-chip');
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  });
+
+  wrap.addEventListener('click', e => {
+    if (!swallow || e.target !== downChip) return;   // 只吞"起点零件上那一次补发的 click"
+    swallow = false;
+    e.stopPropagation();
+    e.preventDefault();
+  }, true);
+}
+
 function updateSelStatus() {
   if (!work) { DOM.selStatus.textContent = ''; DOM.selStatus.classList.add('empty'); return; }
   const names = S.selected.map(id => Studio.itemLabel(work, id));
@@ -675,6 +774,10 @@ function renderTray() {
     chip.addEventListener('click', () => { DOM.resultInput.value = self; DOM.confirmMergeBtn.disabled = false; });
     DOM.candidateWrap.appendChild(chip);
   }
+  // 多选且拆字库只给出唯一一个"正好由它们合成"的字 → 直接填进结果框，少点一次
+  if (n >= 2 && cand.exact.length === 1 && !DOM.resultInput.value.trim()) {
+    DOM.resultInput.value = cand.exact[0];
+  }
   if (show.length) {
     for (const g of show.slice(0, 12)) {
       const exact = cand.exact.includes(g);
@@ -697,28 +800,7 @@ function mergesUsingChar(st, charId) {
     .map(m => m.id);
 }
 
-function assignRole(role) {
-  if (!work) {
-    setStatus('还没有谜面。先在第 ① 步载入一句。', false, { label: '去 ① 载入谜面', fn: () => gotoStep(1) });
-    return;
-  }
-  const c = work.chars.find(x => x.id === S.openCharId);
-  if (!c) { setStatus('先点一个谜面字，再选身份。', false); return; }
-  if (c.role === role) return;
-
-  const affected = mergesUsingChar(work, c.id);
-  Studio.assignRole(work, c.id, role);
-  for (const id of affected) Studio.deleteMergeCascade(work, id);
-  S.selected = [];
-  renderWorkspace();
-  renderPairPanel();
-  invalidateTimeline();
-  const base = `「${c.char}」已设为「${ROLE[role].label}」。`;
-  setStatus(affected.length ? `${base}同时清掉了用到这个字的 ${affected.length} 次合并。` : base, true,
-    role === 'zi' ? null : { label: '改回「字素」', fn: () => assignRole('zi') });
-}
-
-/** 把所有字恢复成默认的「字素」（实验之后一键回到初始） */
+/** 把所有字都设为「字素」（最常见的情况：一句谜面里每个字都参与拆合） */
 function markAllZi() {
   if (!work) {
     setStatus('还没有谜面。先在第 ① 步载入一句。', false, { label: '去 ① 载入谜面', fn: () => gotoStep(1) });
@@ -805,104 +887,133 @@ function renderPairPanel() {
   if (!show) { S.pairPick = null; return; }
 
   const pairs = Studio.effectivePairs(work);
-  const bySlot = {};
-  for (const id in pairs) bySlot[pairs[id]] = id;
+  const slotToIds = {};                 // 槽位 -> 指向它的合成结果 id 列表（双扣：可多个）
+  for (const id in pairs) (slotToIds[pairs[id]] = slotToIds[pairs[id]] || []).push(id);
   const live = Studio.liveMerges(work);
   if (S.pairPick && !live.some(m => m.id === S.pairPick)) S.pairPick = null;
   // 空闲的（还没连上的）结果：决定空位上该写"点下面选一个"还是"没有空闲的"
   const rest = live.filter(m => pairs[m.id] == null);
+  // 已被占用的槽位（双扣时同一槽挂多个结果，仍算已占）
+  const occupied = new Set(Object.values(pairs));
+  // 第一个还空着的槽位（除 j 自身），用于"拿起空闲结果去占别的行时让被顶下的人不落空"
+  const firstEmptySlot = j => {
+    for (let k = 0; k < [...work.answer].length; k++) if (k !== j && !occupied.has(k)) return k;
+    return null;
+  };
 
   /**
    * 把手上拿起的结果连到第 i 个谜底位（没拿起就提醒，不静默失败）。
-   * 拿起的结果原本就在某一行时，被它顶下来的那个补回原位 —— 也就是"两个位置互换"，
-   * 这样"杏该在第 2 位、花该在第 1 位"只要点两下，不必先解除再一个个连。
+   *  - 单来源槽：拿起的结果若原本在另一行，被它顶下的人补回原位 = "两个位置互换"；
+   *    若拿起的是空闲/被解除的结果，被顶下的人补到第一个空槽，看板始终不留空洞。
+   *    这样"杏该在第 2 位、花该在第 1 位"只要点两下，不必先解除再一个个连。
+   *  - 双扣（多来源槽）：直接叠加，不顶替任何人 —— 拿起一个结果连到已有来源的行 = 加一条扣法。
    */
   const attach = (i, ch) => {
     if (!S.pairPick) {
       setStatus(rest.length
         ? '先点下面「还没连上的合成结果」里的一个，再点它要落到的谜底位。'
-        : `现在没有空闲的合成结果：把已经连上的结果拿过来换，或者就让「${ch}」在动画末尾直接弹出。`, false);
+        : `现在没有空闲的合成结果：把已经连上的结果拿过去换，或者就让「${ch}」在动画末尾直接弹出。`, false);
       return;
     }
     const from = S.pairPick;
-    const fromSlot = pairs[from] != null ? pairs[from] : null;
-    const prev = bySlot[i];
-    Studio.pairResult(work, from, i);
-    if (prev && prev !== from && fromSlot != null) Studio.pairResult(work, prev, fromSlot);
-    S.pairPick = null;
-    setStatus(prev && prev !== from
-      ? `已互换：${from} → 谜底第 ${i + 1} 字「${ch}」，${prev} 回到第 ${fromSlot + 1} 位。`
-      : `已配对：${from}（${Studio.itemLabel(work, from)}）→ 谜底第 ${i + 1} 字「${ch}」。`);
+    // fromSlot：拿起的结果**当前**落到的槽位（"互换"时把它顶下的人送回这里）。
+    // 优先取显式配对 st.pairs；未手动配过的结果用同一来源 effectivePairs（已含自动补位）。
+    const fromSlot = work.pairs[from] != null ? work.pairs[from]
+      : (pairs[from] != null ? pairs[from] : null);
+    const here = slotToIds[i] || [];
+    if (here.length <= 1) {
+      // 单来源：保持原"互换"语义
+      const prev = here.length === 1 ? here[0] : null;
+      Studio.pairResult(work, from, i);
+      // 被顶下的人：回到 from 离开的槽；from 原本空闲则补到第一个空槽，避免本行留空洞
+      let back = null;
+      if (prev && prev !== from) back = fromSlot != null ? fromSlot : firstEmptySlot(i);
+      if (back != null) Studio.pairResult(work, prev, back);
+      S.pairPick = null;
+      setStatus(prev && prev !== from
+        ? `已互换：${from} → 谜底第 ${i + 1} 字「${ch}」，${prev} 回到第 ${back + 1} 位。`
+        : `已配对：${from}（${Studio.itemLabel(work, from)}）→ 谜底第 ${i + 1} 字「${ch}」。`);
+    } else {
+      // 多来源（双扣）：叠加，不顶替
+      Studio.pairResult(work, from, i);
+      S.pairPick = null;
+      setStatus(`已叠加（双扣）：${from}（${Studio.itemLabel(work, from)}）也扣向谜底第 ${i + 1} 字「${ch}」—— 这一行现在由 ${here.length} 个来源共同承担。`);
+    }
     renderPairPanel();
     invalidateTimeline();
   };
 
-  // ---- 看板：按槽位顺序，一行一次对应 ----
+  // ---- 看板：按槽位顺序，一行一个谜底位（双扣时这一行可有多个来源方块）----
   DOM.pairBoard.innerHTML = '';
   [...work.answer].forEach((ch, i) => {
-    const rid = bySlot[i];
-    const rm = rid ? live.find(m => m.id === rid) : null;
-    const row = el('div', 'pair-row ' + (rm ? 'matched' : 'unmatched') + (S.pairPick ? ' aiming' : ''));
+    const ids = slotToIds[i] || [];
+    const row = el('div', 'pair-row ' + (ids.length ? 'matched' : 'unmatched') + (S.pairPick ? ' aiming' : ''));
     row.dataset.slot = i;
-    row.setAttribute('aria-label', rm
-      ? `谜底第 ${i + 1} 字「${ch}」，由合成结果 ${rm.id}「${rm.glyph}」承担`
+    row.setAttribute('aria-label', ids.length
+      ? `谜底第 ${i + 1} 字「${ch}」，由 ${ids.length} 个合成结果共同承担（双扣）`
       : `谜底第 ${i + 1} 字「${ch}」，还没有合成结果承担，动画末尾会直接弹出`);
 
-    // 左：承担它的合成结果 / 或一个"连到这里"的空位
+    // 左：承担它的合成结果方块（多个） / 或一个"连到这里"的空位
     const wrap = el('div', 'pair-src-wrap');
-    const src = el('button', 'pair-src' + (rm ? '' : ' empty') + (rm && S.pairPick === rm.id ? ' pick' : ''));
-    src.type = 'button';
-    src.dataset.slot = i;
-    if (rm) src.dataset.mergeId = rm.id;   // 供脚本/测试读取"这一行由谁承担" 
-    if (rm) {
-      // 显示"这一笔是怎么拼出来的"（木 + 口），比编号更能说明它凭什么落在这一位
-      const parts = (rm.partGlyphs || []).join(' + ') || rm.id;
-      src.innerHTML = `<span class="glyph">${esc(rm.glyph)}</span><span class="meta">${esc(parts)}</span>`;
-      src.title = `${rm.id}：${parts} → ${rm.glyph}。点一下拿起它，再点别的谜底位就能换配`;
-      src.setAttribute('aria-pressed', S.pairPick === rm.id ? 'true' : 'false');
-      src.addEventListener('click', () => {
-        // 手上已经拿着另一个结果 → 这一下是"把它放到这一行"（两个结果互换位置），
-        // 否则"拿起/放回"更符合预期
-        if (S.pairPick && S.pairPick !== rm.id) { attach(i, ch); return; }
-        S.pairPick = S.pairPick === rm.id ? null : rm.id;
-        setStatus(S.pairPick
-          ? `已拿起 ${rm.id}（${rm.glyph}）：点它要落到的谜底位即可换配。`
-          : '已放回。');
-        renderPairPanel();
-      });
-    } else {
+    if (!ids.length) {
+      // 空位：拿起结果后点这里连上
       const room = rest.length > 0;
+      const src = el('button', 'pair-src empty' + (S.pairPick ? ' pick' : ''));
+      src.type = 'button';
+      src.dataset.slot = i;
       src.innerHTML = `<span class="glyph dim" aria-hidden="true">${room ? '＋' : '—'}</span><span class="meta">${
         S.pairPick ? '连到这里' : (room ? '点下面选一个合成结果' : '没有空闲的合成结果，末尾弹出')}</span>`;
       src.title = S.pairPick
         ? `把 ${S.pairPick} 连到谜底「${ch}」`
         : (room ? '先点下面一个合成结果，再点这里连上' : `没有多余的合成结果产出「${ch}」，动画末尾会让它直接弹出`);
       src.addEventListener('click', () => attach(i, ch));
-    }
-    wrap.appendChild(src);
-    if (rm) {
-      const x = el('button', 'pair-x', '✕');
-      x.type = 'button';
-      x.title = '解除配对：这个谜底字改为动画末尾直接弹出';
-      x.setAttribute('aria-label', `解除谜底第 ${i + 1} 字「${ch}」的配对`);
-      x.addEventListener('click', () => {
-        Studio.unpairResult(work, rm.id);
-        S.pairPick = null;
-        setStatus(`已解除谜底「${ch}」的配对：动画里它会直接弹出，不会再自动连回去。`);
-        renderPairPanel();
-        invalidateTimeline();
+      wrap.appendChild(src);
+    } else {
+      ids.forEach(rid => {
+        const rm = live.find(m => m.id === rid);
+        if (!rm) return;
+        const src = el('button', 'pair-src' + (S.pairPick === rid ? ' pick' : '') + (ids.length > 1 ? ' multi' : ''));
+        src.type = 'button';
+        src.dataset.slot = i;
+        src.dataset.mergeId = rid;   // 供脚本/测试读取"这一行由谁承担"
+        const parts = (rm.partGlyphs || []).join(' + ') || rm.id;
+        src.innerHTML = `<span class="glyph">${esc(rm.glyph)}</span><span class="meta">${esc(parts)}</span>`;
+        src.title = `${rid}：${parts} → ${rm.glyph}。点一下拿起它，再点别的谜底位就能换配`;
+        src.setAttribute('aria-pressed', S.pairPick === rid ? 'true' : 'false');
+        src.addEventListener('click', () => {
+          // 手上已拿另一个结果 → 这一下是"把它也加到这一行"（双扣叠加）；否则拿起/放回
+          if (S.pairPick && S.pairPick !== rid) { attach(i, ch); return; }
+          S.pairPick = S.pairPick === rid ? null : rid;
+          setStatus(S.pairPick
+            ? `已拿起 ${rid}（${rm.glyph}）：点它要落到的谜底位即可换配。`
+            : '已放回。');
+          renderPairPanel();
+        });
+        wrap.appendChild(src);
+        // 每个来源各带一个 ✕：解除只否决这一个，不影响同行的其他来源
+        const x = el('button', 'pair-x', '✕');
+        x.type = 'button';
+        x.title = '解除这一个来源的配对（双扣时只去掉它，其余来源仍落位）';
+        x.setAttribute('aria-label', `解除谜底第 ${i + 1} 字「${ch}」来源 ${rid} 的配对`);
+        x.addEventListener('click', () => {
+          Studio.unpairResult(work, rid);
+          S.pairPick = null;
+          setStatus(`已解除来源 ${rid} 的配对：动画里它不再落位（其余来源照常）。`);
+          renderPairPanel();
+          invalidateTimeline();
+        });
+        wrap.appendChild(x);
       });
-      wrap.appendChild(x);
     }
     row.appendChild(wrap);
 
     row.appendChild(el('span', 'pair-link'));   // 连接线：实线=已配对，虚线=没有来源
 
     // 右：谜底位（顺序即谜底顺序）
-    const slot = el('button', 'pair-slot' + (rm ? ' filled' : ''));
+    const slot = el('button', 'pair-slot' + (ids.length ? ' filled' : ''));
     slot.type = 'button';
     slot.innerHTML = `<span class="idx">谜底第 ${i + 1} 字</span><span class="glyph">${esc(ch)}</span>`;
-    slot.title = rm ? `由 ${rm.id} 承担（点一下把手上拿起的合成结果换到这里）` : '还没有合成结果承担它';
+    slot.title = ids.length ? `由 ${ids.join('、')} 共同承担（双扣）；点一下把手上拿起的合成结果也加进来` : '还没有合成结果承担它';
     slot.addEventListener('click', () => attach(i, ch));
     row.appendChild(slot);
     DOM.pairBoard.appendChild(row);
@@ -1239,6 +1350,7 @@ function init() {
   DOM.btnMian.addEventListener('click', startMian);
   DOM.inputMian.addEventListener('keydown', e => { if (e.key === 'Enter') startMian(); });
   DOM.btnAllZi.addEventListener('click', markAllZi);
+  initMarquee();
   DOM.confirmMergeBtn.addEventListener('click', confirmMerge);
   DOM.cancelMergeBtn.addEventListener('click', cancelMerge);
   DOM.resultInput.addEventListener('input', () => { DOM.confirmMergeBtn.disabled = !DOM.resultInput.value.trim(); });

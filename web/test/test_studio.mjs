@@ -274,6 +274,76 @@ Studio.pairResult(stC, 'r1', 1);
 Studio.deleteMergeCascade(stC, 'r0');
 check('C: 级联删除后 r0 配对清除、r1 保留', stC.pairs.r0 === undefined && stC.pairs.r1 === 1, JSON.stringify(stC.pairs));
 
+// ============ 场景 双扣：一个谜底字位挂多个合成结果 ============
+console.log('— 场景 双扣：一个字位多个来源 —');
+// (a) 同字形双扣：一+大=天、二+人=天，谜底就一个「天」→ 两个结果都扣向槽0
+const stDk = Studio.createState('一大二人');
+for (const c of stDk.chars) Studio.assignRole(stDk, c.id, 'zi');
+Studio.confirmMerge(stDk, ['m0', 'm1'], '天');   // r0
+Studio.confirmMerge(stDk, ['m2', 'm3'], '天');   // r1
+stDk.answer = '天';
+Studio.pairResult(stDk, 'r0', 0);
+Studio.pairResult(stDk, 'r1', 0);                // 不再是"先来的把后来的挤掉"
+const effDk = Studio.effectivePairs(stDk);
+check('双扣(a): 两个结果都配到同一个字位（pairs 同槽挂多个 id）', effDk.r0 === 0 && effDk.r1 === 0, JSON.stringify(effDk));
+check('双扣(a): pairs 允许同一槽位出现两次', Object.values(stDk.pairs).filter(v => v === 0).length === 2, JSON.stringify(stDk.pairs));
+const tlDk = Studio.buildTimelineFromState(stDk, CFG);
+check('双扣(a): 序列 merge,merge,hold（两个都落位、无末尾 reveal）', tlDk.scenes.map(s => s.type).join(',') === 'merge,merge,hold', tlDk.scenes.map(s => s.type).join(','));
+check('双扣(a): 两个 merge 场景都标记 landsOnAnswer（都不被挤去末尾弹出）', tlDk.scenes.filter(s => s.type === 'merge').length === 2 && tlDk.scenes.filter(s => s.type === 'merge').every(s => s.landsOnAnswer === true));
+check('双扣(a): 没有被挤去末尾 reveal', !tlDk.scenes.some(s => s.type === 'reveal'));
+check('双扣(a): 末帧谜底字就位', endAnswerString(tlDk) === '天', endAnswerString(tlDk));
+const badDk = sampleOk(tlDk);
+check('双扣(a): 300 点采样全部合法', !badDk, badDk || '');
+
+// (b) 异字形双扣（部件共同组成谜底字）：舌、辛 共同组成「辞」
+const stDk2 = Studio.createState('舌辛');
+for (const c of stDk2.chars) Studio.assignRole(stDk2, c.id, 'zi');
+Studio.confirmMerge(stDk2, ['m0'], '舌');         // r0（单选提取）
+Studio.confirmMerge(stDk2, ['m1'], '辛');         // r1
+stDk2.answer = '辞';
+Studio.pairResult(stDk2, 'r0', 0);
+Studio.pairResult(stDk2, 'r1', 0);
+const effDk2 = Studio.effectivePairs(stDk2);
+check('双扣(b): 两个结果都配到谜底「辞」的槽0', effDk2.r0 === 0 && effDk2.r1 === 0, JSON.stringify(effDk2));
+const tlDk2 = Studio.buildTimelineFromState(stDk2, CFG);
+check('双扣(b): 序列 merge,merge,hold（无 reveal）', tlDk2.scenes.map(s => s.type).join(',') === 'merge,merge,hold', tlDk2.scenes.map(s => s.type).join(','));
+check('双扣(b): 两个 merge 都落位', tlDk2.scenes.filter(s => s.type === 'merge').every(s => s.landsOnAnswer === true));
+const centerId = tlDk2.answerUnits[0];
+const endDk2 = tlDk2.stateAt(tlDk2.duration);
+const centerItem = endDk2.items.find(i => i.id === centerId);
+check('双扣(b): 中心来源显示谜底字「辞」', centerItem && centerItem.glyph === '辞', centerItem && centerItem.glyph);
+const otherId = centerId === 'r0' ? 'r1' : 'r0';
+const otherMerge = stDk2.merges.find(x => x.id === otherId);
+const otherItem = endDk2.items.find(i => i.id === otherId);
+check('双扣(b): 另一来源显示自身字形（舌/辛），两条路径都看得见', otherItem && otherItem.glyph !== '辞' && otherItem.glyph === otherMerge.glyph, otherItem && otherItem.glyph);
+const badDk2 = sampleOk(tlDk2);
+check('双扣(b): 300 点采样全部合法', !badDk2, badDk2 || '');
+
+// (c) 解除一个不影响另一个：双扣里 ✕ 只去掉被点的那个来源
+Studio.unpairResult(stDk, 'r0');
+const effDk3 = Studio.effectivePairs(stDk);
+check('双扣(c): 解除其中一个不影响另一个', effDk3.r0 === undefined && effDk3.r1 === 0, JSON.stringify(effDk3));
+const tlDk3 = Studio.buildTimelineFromState(stDk, CFG);
+check('双扣(c): 解除后只剩 r1 落位、无多余的 reveal 段', tlDk3.answerUnits[0] === 'r1' && !tlDk3.scenes.some(s => s.type === 'reveal'), JSON.stringify(tlDk3.answerUnits));
+check('双扣(c): 解除后仍无 NaN', !sampleOk(tlDk3), sampleOk(tlDk3) || '');
+
+// (d) 自动配对：同字形可叠到同一槽；异字形绝不抢占已被别的字形占用的槽
+const stDk4 = Studio.createState('一大二人');
+for (const c of stDk4.chars) Studio.assignRole(stDk4, c.id, 'zi');
+Studio.confirmMerge(stDk4, ['m0', 'm1'], '天');
+Studio.confirmMerge(stDk4, ['m2', 'm3'], '天');
+stDk4.answer = '天';
+const autoDk = Studio.autoPair(stDk4);
+check('双扣(自动): 两个相同字形结果都自动配到同一槽', autoDk.r0 === 0 && autoDk.r1 === 0, JSON.stringify(autoDk));
+const stDk5 = Studio.createState('杏杏');
+for (const c of stDk5.chars) Studio.assignRole(stDk5, c.id, 'zi');
+Studio.confirmMerge(stDk5, ['m0'], '杏');
+Studio.confirmMerge(stDk5, ['m1'], '杏');
+stDk5.answer = '杏花';
+const autoDk2 = Studio.autoPair(stDk5);
+check('双扣(自动): 异字谜底下两个相同字形仍叠到同一槽、不误占花槽', autoDk2.r0 === 0 && autoDk2.r1 === 0, JSON.stringify(autoDk2));
+
+
 // ============ 场景 D：多字提取合并 + 单次使用约束 ============
 console.log('— 场景 D：多人成众 + 使用约束 —');
 // 三人成众：三个整字一次合并（>2 项，从多个字提取）
@@ -549,6 +619,113 @@ function fitProbe(n, answerLen = 1) {
   for (const [label, r] of [['25字', r25], ['40字', r40], ['谜底15字', a15]]) {
     check(`降字号后 ${label} 不出画布`, outOfBoundsCount(r.tl, r.tl.H) === 0, 'oob=' + outOfBoundsCount(r.tl, r.tl.H));
   }
+}
+
+// ============ 动画定格帧不重叠 ============
+console.log('— 动画定格帧不重叠 —');
+// 只算"看得见"的单元（opacity > 0.15）。两处刻意的不重叠例外不计入：
+//   1) 合并瞬间输入字与结果字的交叉淡入淡出 —— 那是"收敛"本身；
+//   2) 飞行途中穿过别的字 —— 它在动。
+// 这里要拦住的是"停在画面上的两个字叠在一起"：部件糊成一团、双扣两个字重叠、
+// 未配对的结果压在谜底槽位上、等待中的部件被已落位的结果压住。
+function animState(mian, answer, merges, pairs) {
+  const st = Studio.createState(mian);
+  for (const c of st.chars) Studio.assignRole(st, c.id, 'zi');
+  for (const [ids, g] of merges) Studio.confirmMerge(st, ids, g);
+  st.answer = answer;
+  for (const [id, slot] of pairs || []) Studio.pairResult(st, id, slot);
+  return st;
+}
+function visibleOverlap(tl) {
+  const ats = [0];
+  let acc = 0;
+  for (const sc of tl.scenes) { acc += sc.duration; ats.push(acc); }
+  let bad = 0;
+  for (const at of ats) {
+    const v = tl.stateAt(Math.min(at, tl.duration)).items.filter(i => i.opacity > 0.15);
+    for (let i = 0; i < v.length; i++) {
+      for (let j = i + 1; j < v.length; j++) {
+        const a = v[i], b = v[j];
+        const half = (a.fontSize + b.fontSize) / 2;
+        if (Math.abs(a.x - b.x) < half - 1 && Math.abs(a.y - b.y) < half - 1) bad++;
+      }
+    }
+  }
+  return bad;
+}
+const animCases = [
+  ['十八口→杏', animState('十八口', '杏', [[['m0', 'm1'], '木'], [['r0', 'm2'], '杏']])],
+  ['多段 木口艹化→杏花', animState('木口艹化', '杏花', [[['m0', 'm1'], '杏'], [['m2', 'm3'], '花']])],
+  ['千古（跨字提取，部件分属两次合并）', animState('千古', '千古',
+    [[['m0-p0', 'm1-p0'], '千'], [['m0-p1', 'm1-p1'], '古']])],
+  ['双扣 同字形', animState('一大二人', '天', [[['m0', 'm1'], '天'], [['m2', 'm3'], '天']], [['r0', 0], ['r1', 0]])],
+  ['双扣 异字形（舌+辛→辞）', animState('舌辛', '辞', [[['m0'], '舌'], [['m1'], '辛']], [['r0', 0], ['r1', 0]])],
+  ['双扣 + 多槽', animState('一大二人三天五日', '天三五日月',
+    [[['m0', 'm1'], '天'], [['m2', 'm3'], '天'], [['m4'], '三'], [['m5'], '五'], [['m6'], '日'], [['m7'], '月']],
+    [['r0', 0], ['r1', 0], ['r2', 1], ['r3', 2], ['r4', 3], ['r5', 4]])],
+  // 合并次数多于谜底字数 -> 多出来的结果配不上槽位，只能排到谜底行下方
+  ['未配对结果（合并 3 次 / 谜底 2 字）', animState('木口日月', '杏日',
+    [[['m0', 'm1'], '杏'], [['m2'], '日'], [['m3'], '月']])],
+];
+for (const [name, st] of animCases) {
+  const tl = Studio.buildTimelineFromState(st, CFG);
+  check(`定格帧无重叠：${name}`, visibleOverlap(tl) === 0, 'overlap=' + visibleOverlap(tl));
+  check(`不出画布：${name}`, outOfBoundsCount(tl, tl.H) === 0, 'oob=' + outOfBoundsCount(tl, tl.H));
+  check(`标签间距 ≥ 8px：${name}`, minItemLeft(tl) - labelRight >= 8, 'gap=' + (minItemLeft(tl) - labelRight).toFixed(1));
+}
+// 手写 8 部件：拆解后横排，间距不得小于字号（旧公式只剩 28px 配 44px，糊成一团叠了 9 秒）
+{
+  const st = Studio.createState('木');
+  Studio.assignRole(st, 'm0', 'zi');
+  Studio.setManualParts(st, 'm0', '一 丨 丿 丶 乀 ㇏ 一 丨');
+  Studio.confirmMerge(st, ['m0-p0', 'm0-p1', 'm0-p2', 'm0-p3', 'm0-p4', 'm0-p5', 'm0-p6', 'm0-p7'], '某');
+  st.answer = '某';
+  const tl = Studio.buildTimelineFromState(st, CFG);
+  const ps = tl.stateAt(tl.scenes[0].duration).items.filter(i => /-p\d+$/.test(i.id));
+  const xs = ps.map(i => i.x).sort((a, b) => a - b);
+  let minGap = Infinity;
+  for (let i = 1; i < xs.length; i++) minGap = Math.min(minGap, xs[i] - xs[i - 1]);
+  check('8 部件拆解后全部落在同一排', ps.length === 8 && ps.every(i => Math.abs(i.y - ps[0].y) < 1), 'n=' + ps.length);
+  check('8 部件：横排间距 ≥ 字号（不再糊成一团）', minGap >= ps[0].fontSize - 1,
+    `gap=${minGap.toFixed(1)} fs=${ps[0].fontSize}`);
+  check('8 部件：定格帧无重叠', visibleOverlap(tl) === 0, 'overlap=' + visibleOverlap(tl));
+  check('8 部件：画布未被加高', tl.H === 210, 'H=' + tl.H);
+}
+// 8 部件分 4 次合并：等待中的部件不得与先落位的结果撞在一起
+{
+  const st = Studio.createState('木口');
+  for (const c of st.chars) Studio.assignRole(st, c.id, 'zi');
+  Studio.setManualParts(st, 'm0', '一 丨 丿 丶 乀 ㇏ 一 丨');
+  Studio.confirmMerge(st, ['m0-p0', 'm0-p1'], '仌');
+  Studio.confirmMerge(st, ['m0-p2', 'm0-p3'], '从');
+  Studio.confirmMerge(st, ['m0-p4', 'm0-p5'], '众');
+  Studio.confirmMerge(st, ['m0-p6', 'm0-p7'], '品');
+  st.answer = '仌从众品';
+  const tl = Studio.buildTimelineFromState(st, CFG);
+  check('8 部件分 4 次合并：定格帧无重叠', visibleOverlap(tl) === 0, 'overlap=' + visibleOverlap(tl));
+  check('8 部件分 4 次合并：画布未被加高', tl.H === 210, 'H=' + tl.H);
+}
+// 双扣：同槽两个结果的间距必须容得下字号（旧值 44px 配 54px 字号 = 叠着）
+{
+  const st = animState('一大二人', '天', [[['m0', 'm1'], '天'], [['m2', 'm3'], '天']], [['r0', 0], ['r1', 0]]);
+  const tl = Studio.buildTimelineFromState(st, CFG);
+  const end = tl.stateAt(tl.duration).items;
+  const a = end.find(i => i.id === 'r0'), b = end.find(i => i.id === 'r1');
+  check('双扣：同槽两个字位单元间距 ≥ 字号', !!a && !!b && Math.abs(a.x - b.x) >= (a.fontSize + b.fontSize) / 2 - 1,
+    a && b ? `dx=${Math.abs(a.x - b.x).toFixed(1)} fs=${a.fontSize}` : '缺单元');
+  check('双扣：两个字位单元都在槽位附近、都在画面里',
+    !!a && !!b && [a, b].every(i => i.x > 0 && i.x < 640), a && b ? `${a.x.toFixed(0)},${b.x.toFixed(0)}` : '');
+}
+// 未配对结果：排到谜底行下方，不与谜底槽位同位（否则会正好压住谜底字）
+{
+  const st = animState('木口日月', '杏日', [[['m0', 'm1'], '杏'], [['m2'], '日'], [['m3'], '月']]);
+  const tl = Studio.buildTimelineFromState(st, CFG);
+  const end = tl.stateAt(tl.duration).items;
+  const stray = end.find(i => i.id === 'r2');
+  const ans0 = end.find(i => i.id === 'r0');   // 落在谜底槽 0 上的结果
+  check('未配对结果排在谜底行下方（不与谜底同位）',
+    !!stray && !!ans0 && stray.y - ans0.y >= 30, stray && ans0 ? `stray.y=${stray.y} ans.y=${ans0.y}` : '缺单元');
+  check('未配对结果仍留在画面里（不凭空消失）', !!stray && stray.opacity > 0.15, stray ? 'op=' + stray.opacity : '缺单元');
 }
 
 // ============ 防御性 ============

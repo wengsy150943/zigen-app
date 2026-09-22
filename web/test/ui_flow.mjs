@@ -38,10 +38,11 @@ const railStates = () => [...doc.querySelectorAll('#rail .rail-step')].map(b => 
 const stepStates = () => [...doc.querySelectorAll('.step[data-step]')].map(s => s.dataset.state).join(',');
 const chipOf = glyph => [...doc.querySelectorAll('#chipsWrap .chip')]
   .find(c => c.querySelector('.chip-glyph').textContent === glyph);
-const openChar = glyph => click(chipOf(glyph));                       // 点谜面字 → 展开/收起身份字卡
-const ensureOpen = glyph => { if (cardGlyph() !== glyph) openChar(glyph); }; // 确保某字的身份字卡已展开
-const cardGlyph = () => { const g = $('charCard').querySelector('.cc-glyph'); return g ? g.textContent : null; };
-const roleBtn = k => doc.querySelector(`#roleBtns .role-btn[data-role="${k}"]`);
+// 身份笔：先选一支笔，再点字 —— 点一下就定，不再有字卡
+const rolePen = k => doc.querySelector(`#roleBtns .role-btn[data-role="${k}"]`);
+const takePen = k => click(rolePen(k));                               // 拿起某支笔（再点一次 = 放下）
+const ensurePen = k => { if (rolePen(k).getAttribute('aria-pressed') !== 'true') takePen(k); }; // 幂等：确保手里是这支
+const tagChar = glyph => click(chipOf(glyph));                        // 用当前这支笔点一个谜面字
 // 字素池：一行一个来源字，行内是「整字 + 各部件」。同名部件按来源字区分，互不干扰。
 const poolBlocks = () => [...$('partsWrap').querySelectorAll('.part-block')].filter(b => b.querySelector('.pb-glyph'));
 const blockOf = glyph => poolBlocks().find(b => b.querySelector('.pb-glyph').textContent === glyph);
@@ -102,21 +103,79 @@ $('inputMian').value = '千古';
 click($('btnMian'));
 dump('chips:', () => [...doc.querySelectorAll('#chipsWrap .chip')].map(c => c.textContent.trim()).join('|'));
 assert(stepStates() === 'done,active,active', '载入谜面后 ①完成 ②进行中 ③可进入（实际 ' + stepStates() + '）');
-assert($('step2Meta').textContent.trim() === '2 个可拆字', '② 副标题显示可拆字数（实际 ' + $('step2Meta').textContent.trim() + '）');
-assert(doc.querySelectorAll('#chipsWrap .chip.active').length === 1, '载入后自动展开第一个字，省掉一次点击');
+assert($('step2Meta').textContent.trim() === '0 个可拆字', '载入后不预设任何字的身份（实际 ' + $('step2Meta').textContent.trim() + '）');
+assert(doc.querySelectorAll('#chipsWrap .chip.tagged').length === 0, '载入后每个字都是未标注（虚线待标）');
+assert(doc.querySelectorAll('#partsWrap .part-block').length === 0, '还没标字素时字素池是空的');
 
-// ---------- ② 字素池：所有字素的零件一次摊开，跨字混选不用切字卡 ----------
-assert(cardGlyph() === '千', '字卡显示自动选中的字「千」（实际 ' + cardGlyph() + '）');
+// ---------- 身份笔：先选一支笔，再点字 ----------
+assert(!!doc.querySelector('#roleBar #roleBtns'), '身份笔常驻在字块上方（不必先展开字卡）');
 assert(doc.querySelectorAll('#roleBtns .role-btn[data-role]').length === 2, '身份只分两类（字素 / 衬字）');
-assert(roleBtn('zi').getAttribute('aria-pressed') === 'true', '默认身份 = 字素（分类可选，不标也能走完全程）');
-assert(roleBtn('zi').querySelector('.role-desc').textContent.length >= 5, '身份按钮内联释义（不必读整段说明）');
+assert(rolePen('zi').getAttribute('aria-pressed') === 'true', '默认已拿着「字素」笔');
+assert(rolePen('zi').querySelector('.role-desc').textContent.length >= 5, '身份按钮内联释义（不必读整段说明）');
+tagChar('千'); tagChar('古');
+assert(chipBadge('千') === '字素' && chipBadge('古') === '字素', '点一下就定：点过的字立刻挂上身份徽标');
+assert($('step2Meta').textContent.trim() === '2 个可拆字', '② 副标题显示可拆字数（实际 ' + $('step2Meta').textContent.trim() + '）');
 assert(poolChars() === '千,古', '字素池一次列出所有字素的零件行（不必逐个点开字卡，实际 ' + poolChars() + '）');
+// 再点已标注的字 = 取消；放下笔之后点字不改任何东西
+tagChar('千');
+assert(chipBadge('千') === null, '再点已标注的字 → 取消身份（回到未标注）');
+tagChar('千');
+assert(chipBadge('千') === '字素', '取消之后能再点回来');
+takePen('zi');                                   // 手里正是「字素」笔 → 再点一次 = 放下
+assert(rolePen('zi').getAttribute('aria-pressed') === 'false', '再点一次笔 = 放下笔（不会误改字）');
+tagChar('古');
+assert(chipBadge('古') === '字素', '没拿笔时点字不改任何东西（实际 ' + chipBadge('古') + '）');
+assert($('status').textContent.includes('先'), '没拿笔就点字时给出提示（实际 ' + $('status').textContent + '）');
+ensurePen('zi');
 assert(rowChips('千') === '千,丿,十', '「千」那一行 = 整字 + 部件（实际 ' + rowChips('千') + '）');
 assert(rowChips('古') === '古,十,口', '「古」那一行 = 整字 + 部件（实际 ' + rowChips('古') + '）');
 assert(partChip('千', '十') !== partChip('古', '十'), '不同来源字拆出的同名部件是两枚独立零件');
 assert(partChip('千', '十').dataset.chipId === 'm0-p1' && partChip('古', '十').dataset.chipId === 'm1-p0',
   '零件按「来源字-部件号」寻址（千的十=m0-p1，古的十=m1-p0）');
 assert(!$('pendingWrap').classList.contains('show'), '没有挑选时待合并托盘不占位');
+
+// ---------- 拖框划选：一次拖过几个零件就全选（不用逐个点） ----------
+// jsdom 没有布局（getBoundingClientRect 一律返回 0），先给零件发一套假矩形才能测命中
+const layoutChips = () => {
+  [...$('partsWrap').querySelectorAll('.sel-chip')].forEach((chip, i) => {
+    const x = i * 70;
+    chip.getBoundingClientRect = () => ({ left: x, top: 0, right: x + 60, bottom: 40, width: 60, height: 40 });
+  });
+};
+const ptr = (type, x, y, target, opts) => {
+  const e = new window.MouseEvent(type,
+    Object.assign({ bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 }, opts || {}));
+  Object.defineProperty(e, 'pointerType', { value: 'mouse' });   // jsdom 没有 PointerEvent
+  (target || window).dispatchEvent(e);
+};
+const selCount = () => doc.querySelectorAll('#partsWrap .sel-chip.sel').length;
+
+layoutChips();
+const chips0 = [...$('partsWrap').querySelectorAll('.sel-chip')];
+ptr('pointerdown', 5, 20, chips0[0]);
+ptr('pointermove', 105, 20);
+assert(selCount() === 2, '从第一个零件拖到第二个 → 两个一起选中（实际 ' + selCount() + '）');
+assert(!!doc.querySelector('.marquee'), '拖动时显示橡皮筋选框');
+ptr('pointerup', 105, 20);
+assert(!doc.querySelector('.marquee'), '松手后选框移除');
+dump('框选后:', () => $('selStatus').textContent);
+assert($('selStatus').textContent.includes('丿(来自千)'), '框选结果直接进托盘（实际 ' + $('selStatus').textContent + '）');
+// 浏览器在 pointerup 之后还会补一个 click —— 必须吞掉，否则框选白做
+click(chips0[0]);
+assert(selCount() === 2, '拖动后补发的 click 被吞掉，框选结果不被改（实际 ' + selCount() + '）');
+// 只是点一下（没拖动）仍然是原来的单击切换
+click(chips0[0]);
+assert(selCount() === 1, '没拖动时单击照旧切换选中（实际 ' + selCount() + '）');
+// Shift + 拖 = 追加，不覆盖已选
+layoutChips();
+const chips1 = [...$('partsWrap').querySelectorAll('.sel-chip')];
+ptr('pointerdown', 215, 20, chips1[3], { shiftKey: true });
+ptr('pointermove', 245, 20);
+assert(selCount() === 2, 'Shift 拖动是追加（原 1 个 + 框到 1 个，实际 ' + selCount() + '）');
+ptr('pointerup', 245, 20);
+click($('cancelMergeBtn'));
+assert(selCount() === 0 && !$('pendingWrap').classList.contains('show'),
+  '「清空」收掉这次框选，后面的流程从干净状态开始（实际剩 ' + selCount() + '）');
 
 // 跨字挑选：丿(千) + 十(古) —— 全程不打开任何字卡，全在同一个池子里完成
 pickPart('千', '丿');
@@ -154,11 +213,12 @@ assert($('step2').dataset.state === 'done', '合并后 ② 标记为已完成');
 assert(railStates() === 'done,done,active', '合并后步骤轨推进到 ③（实际 ' + railStates() + '）');
 
 // ---------- 改身份：会清掉用到这个字的合并 ----------
-ensureOpen('千');
-click(roleBtn('ci'));
+takePen('ci');
+assert(rolePen('ci').getAttribute('aria-pressed') === 'true' && rolePen('zi').getAttribute('aria-pressed') === 'false',
+  '一次只有一支笔在手（换笔后旧笔自动放下）');
+tagChar('千');
 dump('改身份后 status:', () => $('status').textContent);
-assert(roleBtn('ci').getAttribute('aria-pressed') === 'true' && roleBtn('zi').getAttribute('aria-pressed') === 'false', '身份切换生效（分段控件只有一个按下）');
-assert($('charCard').textContent.includes('不参与拆合'), '非字素身份给出「不参与拆合」的说明');
+assert(chipBadge('千') === '衬字', '换笔后点字 → 身份立刻改掉（点一下就定）');
 assert(doc.querySelectorAll('#mergesWrap .merge-item').length === 0, '改身份清掉了用到该字的合并（避免部件凭空出现）');
 assert($('status').textContent.includes('清掉'), '引导条说明刚刚连锁删除的后果');
 assert(chipOf('千').style.borderColor === 'rgb(232, 89, 12)', '谜面字块按身份着色（衬字=橙）');
@@ -171,8 +231,8 @@ assert(chipOf('古').style.borderColor === 'rgb(47, 158, 68)', '字素字块按�
 
 // 「全部设为字素」一键复原
 click($('btnAllZi'));
-assert(doc.querySelectorAll('#chipsWrap .chip.active').length === 1, '复原后仍保持选中状态');
-assert(roleBtn('zi').getAttribute('aria-pressed') === 'true', '一键复原为「字素」');
+assert(doc.querySelectorAll('#chipsWrap .chip.tagged').length === 2, '「全部设为字素」后每个字都挂上徽标');
+assert(rolePen('ci').getAttribute('aria-pressed') === 'true', '一键复原只改字、不动手里这支笔');
 assert(poolChars() === '千,古', '复原后零件全部回到字素池');
 assert($('status').textContent.includes('全部设为「字素」'), '引导条确认复原动作');
 
@@ -248,6 +308,8 @@ assert(Math.abs(window.__dshTimeline.duration - 5.5) < 0.01, '总时长 = 拆2.6
 // （左侧示例 chip 已移除，这里用手动点击走完与「木口艹化 → 杏花」等价的流程）
 $('inputMian').value = '木口艹化';
 click($('btnMian'));
+ensurePen('zi');
+for (const g of ['木', '口', '艹', '化']) tagChar(g);   // 四个字都标成字素
 pickPart('木', '木'); pickPart('口', '口'); mergeAs('杏');
 pickPart('艹', '艹'); pickPart('化', '化'); mergeAs('花');
 $('answerInput').value = '杏花';
@@ -284,6 +346,7 @@ $('answerInput').value = '杏';
 click($('btnMian'));
 assert($('answerLine').textContent.includes('杏'), '③ 回显 ① 里填的谜底（实际 ' + $('answerLine').textContent.trim() + '）');
 assert($('step3Meta').textContent.trim() === '待生成', '填了谜底后 ③ 提示「待生成」');
+ensurePen('zi'); tagChar('木'); tagChar('口');
 
 // 拼出谜底的那一次合并，落点由"已知的谜底"直接决定
 pickPart('木', '木');
@@ -316,6 +379,8 @@ assert(!$('statusAction').hidden && $('statusAction').textContent.includes('①'
 $('inputMian').value = '十八口';
 $('answerInput').value = '杏子';
 click($('btnMian'));
+ensurePen('zi');
+for (const g of ['十', '八', '口']) tagChar(g);
 pickPart('十', '十'); pickPart('八', '八'); mergeAs('木');
 assert(mergeChips().length === 1 && mergeChips()[0].textContent.includes('木'),
   '字素池首行列出「已拼出」的字 —— 合成结果能继续当输入（旧实现第二笔点不出来）');
@@ -361,6 +426,7 @@ dump('动画里的颜色:', () => [...polyColors].join(','));
 $('inputMian').value = '古木';
 $('answerInput').value = '';
 click($('btnMian'));
+ensurePen('zi'); tagChar('古'); tagChar('木');
 const decompInput = g => blockOf(g).querySelector('.decomp-input');
 const mineChips = g => [...blockOf(g).querySelectorAll('.sel-chip.mine')];
 const mineGlyphs = g => mineChips(g).map(c => c.querySelector('.chip-glyph').textContent).join('+');
@@ -436,6 +502,7 @@ assert($('status').textContent.includes('清掉'), '引导条说明连锁删除�
 // 拆字库没收录的字：不是死路，而是引导你手写
 $('inputMian').value = '龘';
 click($('btnMian'));
+ensurePen('zi'); tagChar('龘');
 assert(blockOf('龘').textContent.includes('拆字库未收录'), '未收录的字如实说明');
 assert(!!decompInput('龘'), '未收录的字同样给出手写/点选入口（不再是一句"只能以整字参与合成"的死路）');
 typeParts('龘', '龙龙龙');
@@ -445,6 +512,7 @@ assert($('poolMeta').textContent.includes('4 个'), '池子计数把手写部件
 // 长谜面换行（手写拆法之后的独立场景）
 $('inputMian').value = '一口咬掉牛尾巴二人土上坐田土日月';
 click($('btnMian'));
+ensurePen('zi'); tagChar('一');
 pickPart('一', '一'); mergeAs('一');
 $('answerInput').value = '告';
 $('answerInput').dispatchEvent(new window.Event('input', { bubbles: true }));
@@ -457,13 +525,41 @@ assert(h3 > 210, '长谜面画布自动加高（H=' + h3 + ' > 210）');
 assert($('sizeHint').textContent.trim() === '640×' + h3, '尺寸提示跟随动态高度（实际 ' + $('sizeHint').textContent.trim() + '）');
 assert($('stage').style.aspectRatio.replace(/\s+/g, '') === '640/' + h3, '预览舞台与画布同比例');
 
-// ---------- 分类可选：换了谜面也不用重新标注 ----------
+// ---------- 双扣：两个合成结果指向同一个谜底位 ----------
+$('inputMian').value = '一大二人';
+$('answerInput').value = '天';
+click($('btnMian'));
+ensurePen('zi');
+for (const g of ['一', '大', '二', '人']) tagChar(g);
+pickPart('一', '一'); pickPart('大', '大'); mergeAs('天');   // r0 = 天（一+大）
+pickPart('二', '二'); pickPart('人', '人'); mergeAs('天');   // r1 = 天（二+人）
+$('answerInput').value = '天';
+$('answerInput').dispatchEvent(new window.Event('input', { bubbles: true }));
+assert(pairRows().length === 1, '双扣：谜底 1 个字 → 看板 1 行（实际 ' + pairRows().length + '）');
+const srcs0 = () => pairRows()[0].querySelectorAll('.pair-src:not(.empty)');
+assert(srcs0().length === 2, '双扣：这一行有两个来源方块（实际 ' + srcs0().length + '）');
+assert(pairRows()[0].querySelectorAll('.pair-x').length === 2, '双扣：两个来源各带一个 ✕（实际 ' + pairRows()[0].querySelectorAll('.pair-x').length + '）');
+// 拿起一个来源，再点已有来源的行 → 叠加（双扣），不被挤掉
+click(srcs0()[0]);                 // 拿起 r0
+click(srcs0()[1]);                 // 点另一个来源所在行 → 叠加
+assert(srcs0().length === 2, '双扣：拿起再点已有行仍是两个来源（叠加不挤掉，实际 ' + srcs0().length + '）');
+// 解除其中一个不影响另一个：只剩一个来源，被解的那个回到"还没连上"
+click(pairRows()[0].querySelectorAll('.pair-x')[0]);
+assert(srcs0().length === 1, '双扣：解除一个后这一行还剩一个来源（实际 ' + srcs0().length + '）');
+assert(freeChips().length === 1, '双扣：被解除的那个回到"还没连上"列表（实际 ' + freeChips().length + '）');
+click($('btnBuild'));
+assert(window.__dshTimeline.scenes.map(s => s.type).join(',') === 'merge,merge,hold',
+  '双扣：两个结果都落位、无末尾 reveal（实际 ' + window.__dshTimeline.scenes.map(s => s.type).join(',') + '）');
+assert(window.__dshTimeline.scenes.every(s => s.type !== 'reveal'), '双扣：没有被挤去末尾弹出');
+
+// ---------- 换了谜面：仍然先选笔再点字 ----------
 $('inputMian').value = '木口';
 click($('btnMian'));
 assert($('step2').dataset.state === 'active', '载入后 ② 立即可用（不再需要先标注）');
-assert(cardGlyph() === '木', '载入后自动展开第一个字');
-openChar('口');
-assert(cardGlyph() === '口', '点另一个字切换展开');
+assert(doc.querySelectorAll('#chipsWrap .chip.tagged').length === 0, '换新谜面同样不预设身份');
+ensurePen('zi');                       // 上一场景最后拿的是「衬字」笔，换回字素
+tagChar('木'); tagChar('口');
+assert(chipBadge('木') === '字素' && chipBadge('口') === '字素', '换谜面后照样点一下就定');
 assert($('step2Meta').textContent.trim() === '2 个可拆字', '没合并时 ② 副标题给出可拆字数（实际 ' + $('step2Meta').textContent.trim() + '）');
 assert(!$('step2').querySelector('.step-foot .btn.next'), '①② 不再放「接下来」按钮（跳转只走步骤轨）');
 
