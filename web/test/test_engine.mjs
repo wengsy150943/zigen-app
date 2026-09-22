@@ -34,7 +34,7 @@ const timeline = E.buildTimeline({
     // 揭示谜底
     E.sceneReveal({ chars: [{ id: 'a0', glyph: '杏' }], cx: 500, cy: 420, spacing: 100, dimIds: ['c0', 'c1', 'c2', 'p0', 'p1', 'm0', 'm1'], label: '谜 底' }),
   ],
-  overlays: [{ text: '谜面：十八口', x: 500, y: 40, fontSize: 20, fill: '#868e96' }],
+  overlays: [{ text: '谜面：十八口', x: 500, y: 40, fontSize: 20, fill: '#868e96', anchor: 'start' }],
 });
 
 const dur = timeline.duration;
@@ -86,6 +86,9 @@ const a0 = fs.items.find(i => i.id === 'a0');
 check('末尾谜底字出现且不透明', a0 && a0.opacity === 1, JSON.stringify(a0 || null));
 check('末尾存在"谜 底"标签', fs.items.some(i => i.id === '__answerLabel'));
 check('末尾谜面覆盖层可见', fs.overlays.length === 1 && fs.overlays[0].text.includes('十八口'));
+// anchor 必须原样透传：旧实现只在 stateAt 里挑字段，把 anchor 丢掉了，
+// svg.js 只能靠自己的默认值兜底 —— 任何非 middle 的对齐会被静默忽略
+check('覆盖层的 anchor 原样透传给渲染层', timeline.stateAt(0).overlays[0].anchor === 'start', String(timeline.stateAt(0).overlays[0].anchor));
 check('末尾无 NaN', !hasNaN(fs));
 
 // --- 确定性 & 中段采样 ---

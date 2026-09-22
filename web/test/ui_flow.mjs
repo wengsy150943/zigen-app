@@ -173,6 +173,17 @@ ptr('pointerdown', 215, 20, chips1[3], { shiftKey: true });
 ptr('pointermove', 245, 20);
 assert(selCount() === 2, 'Shift 拖动是追加（原 1 个 + 框到 1 个，实际 ' + selCount() + '）');
 ptr('pointerup', 245, 20);
+// 起点落在零件里的字形 <span> 上：浏览器补发的 click 目标是那个 span 而不是 .sel-chip 本身 ——
+// 吞并判断必须按 contains 走，否则框选出来的零件会被这一次 click 反选掉（框选白做）
+layoutChips();
+const chipSpan = [...$('partsWrap').querySelectorAll('.sel-chip')][0].querySelector('.chip-glyph');
+ptr('pointerdown', 5, 20, chipSpan);
+ptr('pointermove', 105, 20);
+ptr('pointerup', 105, 20);
+const boxed = selCount();
+click(chipSpan);
+assert(boxed === 2 && selCount() === 2,
+  '起点是字形 span 时补发的 click 也被吞掉（框选保住 ' + boxed + ' 个，实际剩 ' + selCount() + '）');
 click($('cancelMergeBtn'));
 assert(selCount() === 0 && !$('pendingWrap').classList.contains('show'),
   '「清空」收掉这次框选，后面的流程从干净状态开始（实际剩 ' + selCount() + '）');
@@ -370,9 +381,20 @@ $('answerInput').value = '';
 click($('btnMian'));
 assert($('answerLine').textContent.includes('还没填谜底'), '留空时 ③ 明确说明还没填（实际 ' + $('answerLine').textContent.trim() + '）');
 assert(!!$('answerLine').querySelector('button'), '留空时 ③ 给出可点的出路');
+// 配对面板靠 .hidden 类收起来 —— 这条类必须在 CSS 里真的有定义，否则 classList.toggle 是空操作，
+// 面板会带着空看板常驻（旧实现就漏了这条规则）
+assert(window.getComputedStyle($('pairPanel')).display === 'none',
+  '没有可配对的内容时配对面板真的收起来（实际 display=' + window.getComputedStyle($('pairPanel')).display + '）');
 click($('btnBuild'));
 assert($('status').textContent.includes('第 ① 步'), '生成失败时指向 ① 而不是空转（实际 ' + $('status').textContent + '）');
 assert(!$('statusAction').hidden && $('statusAction').textContent.includes('①'), '并给出跳转动作');
+// 没有动画时，播放/单步/导出走同一条出路；且跳转必须指向**真实存在**的步骤
+// （旧文案指向第 ④ 步，而步骤轨早已合并成三步，点了没有任何反应）
+click($('btnPlay'));
+assert($('status').textContent.includes('③') && $('statusAction').textContent.includes('③'),
+  '没有动画时播放指向 ③（实际 ' + $('status').textContent + '）');
+click($('statusAction'));
+assert($('step3').classList.contains('flash'), '点这个动作真的跳到 ③（不再点了没反应）');
 
 
 // ---------- 合成结果也能当输入（连环合并）+ 配对面板只列"活着的"合成结果 ----------
@@ -391,6 +413,7 @@ mergeAs('杏');
 assert(doc.querySelectorAll('#mergesWrap .merge-item').length === 2, '十八口→杏 两笔合并全部由点击完成');
 assert(mergeChips()[0].disabled, '被后一次合并吃掉的中间产物标「已用」，不能再当输入');
 assert(pairRows().length === 2, '配对看板仍是两行（一行一个谜底位）');
+assert(window.getComputedStyle($('pairPanel')).display !== 'none', '有可配对内容时配对面板显示出来');
 assert(srcId(0) === 'r1' && !pairRows()[0].classList.contains('unmatched'),
   '第 1 行由活着的合成结果 r1 承担（被吃掉的「木」不冒充谜底）');
 assert(rowSrc(0).querySelector('.meta').textContent.includes('+'),
@@ -562,6 +585,23 @@ tagChar('木'); tagChar('口');
 assert(chipBadge('木') === '字素' && chipBadge('口') === '字素', '换谜面后照样点一下就定');
 assert($('step2Meta').textContent.trim() === '2 个可拆字', '没合并时 ② 副标题给出可拆字数（实际 ' + $('step2Meta').textContent.trim() + '）');
 assert(!$('step2').querySelector('.step-foot .btn.next'), '①② 不再放「接下来」按钮（跳转只走步骤轨）');
+
+// ---------- 「撤销这一步」必须真的回滚：级联删掉的合并也一起回来 ----------
+// 场景：用 木 + 口 拼一次，再把「木」改成衬字 —— 那次合并会被级联删掉（数据丢失），
+// 引导条既然说「撤销这一步」，就该把合并一起还回来（旧实现只还原身份，合并永久丢失）
+pickPart('木', '木');
+pickPart('口', '口');
+mergeAs('杏');
+assert(doc.querySelectorAll('#mergesWrap .merge-item').length === 1, '先做一次合并作为撤销的靶子');
+takePen('ci');
+tagChar('木');
+assert(doc.querySelectorAll('#mergesWrap .merge-item').length === 0, '改身份把用到「木」的合并级联删掉');
+assert(!$('statusAction').hidden && $('statusAction').textContent.includes('撤销'), '引导条给出「撤销这一步」');
+click($('statusAction'));
+assert(doc.querySelectorAll('#mergesWrap .merge-item').length === 1,
+  '撤销把级联删掉的合并还回来（实际 ' + doc.querySelectorAll('#mergesWrap .merge-item').length + ' 条）');
+assert(chipBadge('木') === '字素', '撤销同时还原身份（实际 ' + chipBadge('木') + '）');
+assert(poolChars() === '木,口', '撤销后零件全部回到字素池（实际 ' + poolChars() + '）');
 
 dump('window errors:', () => (errs.length ? errs.join('; ') : '无'));
 assert(!errs.length, '全流程无 window 异常');

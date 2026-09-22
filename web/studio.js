@@ -197,17 +197,21 @@
     return mine && mine.length ? [mine, ...lib] : lib;
   }
 
-  /** 规范手写拆法：允许"木 口""木、口""木口"等写法；**不去重**（林 = 木+木 是两个部件实例）、限长 */
+  /**
+   * 规范手写拆法：允许"木 口""木、口""木口"等写法；**不去重**（林 = 木+木 是两个部件实例）、限长。
+   * 分隔符与连写混用时同样按单字拆：「木口 火」= 木/口/火 —— 一个部件 = 一个字形，
+   * 这条规则不能"全连写时生效、带分隔符时失效"（旧实现会把「木口」当成一个部件收进去）。
+   */
   function parseParts(text) {
     const raw = String(text == null ? '' : text).trim();
     if (!raw) return [];
-    const chunks = /[\s,，、;；+·|/-]/.test(raw) ? raw.split(/[\s,，、;；+·|/-]+/) : [...raw];
     const out = [];
-    for (const ch of chunks) {
-      const g = ch.trim();
-      if (!g) continue;
-      out.push(g);
-      if (out.length >= MAX_PARTS) break;
+    for (const chunk of raw.split(/[\s,，、;；+·|/-]+/)) {
+      for (const g of chunk) {           // 逐码点展开，多字节字形（如 𠮷）也算一块
+        if (!g) continue;
+        out.push(g);
+        if (out.length >= MAX_PARTS) return out;
+      }
     }
     return out;
   }
@@ -274,81 +278,91 @@
     rebuildParts(st);
   }
 
-  // 已被使用的对象集合：合并引用过的部件/整字/合成结果。
-// 约束「一个字素只用一次」：字素整字被用，或其任一部件被用，则整字与其全部部件都算已用。
-/**
- * 使用中集合（软锁定）：
- *  - 消耗集合 = 所有合并里引用过的部件/整字实例 id（每个实例只能用一次）。
- *  - 部件的某实例被用 → 只锁该实例；
- *  - 整字本身被用 → 该字摊在池子里的全部部件实例一并锁定（整字一次用掉全部材料）；
- *  - 某字的任一部件实例被用 → 整字锁定（整字里包含已消耗的材料，不可整字再用），
- *    但该字其余未用部件实例仍可独立参与后续合并（如 丿(千)+十(古)=千 后，
- *    十(千)、口(古) 仍可用于 十+口=古）。
- *  - 合成结果（中间产物）同样按实例一次一用。
- */
-function usedIdsOf(st) {
-  const consumed = new Set(st.merges.flatMap(m => m.partIds));
-  const used = new Set(consumed);
-  const allPartIdsOf = c => {
-    const out = [];
-    partsOfChar(st, c).forEach((g, i) => out.push(`${c.id}-p${i}`));
-    return out;
-  };
-  for (const c of st.chars) {
-    if (c.role !== 'zi') continue;
-    const allIds = allPartIdsOf(c);
-    if (consumed.has(c.id)) {
-      for (const id of allIds) used.add(id); // 整字整体用掉 → 全部部件锁定
-    } else if (allIds.some(id => consumed.has(id))) {
-      used.add(c.id); // 部分提取 → 整字锁定，未用部件保留
+  /**
+   * 使用中集合（软锁定）：
+   *  - 消耗集合 = 所有合并里引用过的部件/整字实例 id（每个实例只能用一次）。
+   *  - 部件的某实例被用 → 只锁该实例；
+   *  - 整字本身被用 → 该字摊在池子里的全部部件实例一并锁定（整字一次用掉全部材料）；
+   *  - 某字的任一部件实例被用 → 整字锁定（整字里包含已消耗的材料，不可整字再用），
+   *    但该字其余未用部件实例仍可独立参与后续合并（如 丿(千)+十(古)=千 后，
+   *    十(千)、口(古) 仍可用于 十+口=古）。
+   *  - 合成结果（中间产物）同样按实例一次一用。
+   */
+  function usedIdsOf(st) {
+    const consumed = new Set(st.merges.flatMap(m => m.partIds));
+    const used = new Set(consumed);
+    const allPartIdsOf = c => {
+      const out = [];
+      partsOfChar(st, c).forEach((g, i) => out.push(`${c.id}-p${i}`));
+      return out;
+    };
+    for (const c of st.chars) {
+      if (c.role !== 'zi') continue;
+      const allIds = allPartIdsOf(c);
+      if (consumed.has(c.id)) {
+        for (const id of allIds) used.add(id); // 整字整体用掉 → 全部部件锁定
+      } else if (allIds.some(id => consumed.has(id))) {
+        used.add(c.id); // 部分提取 → 整字锁定，未用部件保留
+      }
     }
+    return used;
   }
-  return used;
-}
 
-// 可参与合成的对象：字素整字 + 拆解部件 + 合成结果（已使用的不可再选）
-function mergableItems(st) {
-  const used = usedIdsOf(st);
-  const out = [];
-  for (const c of st.chars) if (c.role === 'zi' && !used.has(c.id)) out.push({ id: c.id, glyph: c.char, kind: '字素' });
-  for (const p of st.parts) if (!used.has(p.id)) out.push({ id: p.id, glyph: p.glyph, kind: '部件' });
-  for (const m of st.merges) if (!used.has(m.id)) out.push({ id: m.id, glyph: m.glyph, kind: '合成' });
-  return out;
-}
-
-// 合并 1~N 个对象（单选=直接提取该字素/部件/合成结果；多选=组合）。
-// glyph 缺省时：单选取对象自身字形，多选必须显式给结果字。返回 {ok} 或 {ok:false, reason}。
-function confirmMerge(st, ids, glyph) {
-  if (!Array.isArray(ids) || ids.length < 1) return { ok: false, reason: '至少选择一个对象。' };
-  if (new Set(ids).size !== ids.length) return { ok: false, reason: '不能重复选择同一个对象。' };
-  const items = mergableItems(st);
-  const avail = new Set(items.map(x => x.id));
-  for (const id of ids) {
-    if (!avail.has(id)) return { ok: false, reason: `「${id}」已被使用（每个字素/部件/合成结果只能用一次）。` };
+  // 可参与合成的对象：字素整字 + 拆解部件 + 合成结果（已使用的不可再选）
+  function mergableItems(st) {
+    const used = usedIdsOf(st);
+    const out = [];
+    for (const c of st.chars) if (c.role === 'zi' && !used.has(c.id)) out.push({ id: c.id, glyph: c.char, kind: '字素' });
+    for (const p of st.parts) if (!used.has(p.id)) out.push({ id: p.id, glyph: p.glyph, kind: '部件' });
+    for (const m of st.merges) if (!used.has(m.id)) out.push({ id: m.id, glyph: m.glyph, kind: '合成' });
+    return out;
   }
-  const itemsById = new Map(items.map(x => [x.id, x.glyph]));
-  if (!glyph) {
-    if (ids.length === 1) glyph = itemsById.get(ids[0]); // 单选：默认就是它自身
-    if (!glyph) return { ok: false, reason: '缺少合成结果字。' };
-  }
-  st.merges.push({
-    id: 'r' + st.mergeSeq++, partIds: ids.slice(), glyph,
-    // 快照各部件字形：部件被用掉后会从 mergableItems 消失，显示层靠快照还原名称
-    partGlyphs: ids.map(id => itemsById.get(id) || '?'),
-  });
-  return { ok: true };
-}
 
-// 稳定标签（不依赖对象是否仍可用）：十(来自古)、千(整字)、杏(合成)
-function itemLabel(st, id) {
-  const m = st.merges.find(x => x.id === id);
-  if (m) return m.glyph + '(合成)';
-  const p = st.parts.find(x => x.id === id);
-  if (p) return p.glyph + '(来自' + ((st.chars.find(c => c.id === p.from) || {}).char || '?') + ')';
-  const c = st.chars.find(x => x.id === id);
-  if (c) return c.char + '(整字)';
-  return id;
-}
+  // 合并 1~N 个对象（单选=直接提取该字素/部件/合成结果；多选=组合）。
+  // glyph 缺省时：单选取对象自身字形，多选必须显式给结果字。返回 {ok} 或 {ok:false, reason}。
+  function confirmMerge(st, ids, glyph) {
+    if (!Array.isArray(ids) || ids.length < 1) return { ok: false, reason: '至少选择一个对象。' };
+    if (new Set(ids).size !== ids.length) return { ok: false, reason: '不能重复选择同一个对象。' };
+    const items = mergableItems(st);
+    const avail = new Set(items.map(x => x.id));
+    for (const id of ids) {
+      if (!avail.has(id)) return { ok: false, reason: `「${id}」已被使用（每个字素/部件/合成结果只能用一次）。` };
+    }
+    const itemsById = new Map(items.map(x => [x.id, x.glyph]));
+    if (!glyph) {
+      if (ids.length === 1) glyph = itemsById.get(ids[0]); // 单选：默认就是它自身
+      if (!glyph) return { ok: false, reason: '缺少合成结果字。' };
+    }
+    st.merges.push({
+      id: 'r' + st.mergeSeq++, partIds: ids.slice(), glyph,
+      // 快照各部件字形：部件被用掉后会从 mergableItems 消失，显示层靠快照还原名称
+      partGlyphs: ids.map(id => itemsById.get(id) || '?'),
+    });
+    return { ok: true };
+  }
+
+  /** 对象当前的字形（合成结果 / 部件 / 整字），找不到时退回 id ——
+   *  调用方要"纯字形"时用它，别去 itemLabel 的括号后缀上做正则剥壳。 */
+  function glyphOf(st, id) {
+    const m = st.merges.find(x => x.id === id);
+    if (m) return m.glyph;
+    const p = st.parts.find(x => x.id === id);
+    if (p) return p.glyph;
+    const c = st.chars.find(x => x.id === id);
+    if (c) return c.char;
+    return id;
+  }
+
+  // 稳定标签（不依赖对象是否仍可用）：十(来自古)、千(整字)、杏(合成)
+  function itemLabel(st, id) {
+    const m = st.merges.find(x => x.id === id);
+    if (m) return m.glyph + '(合成)';
+    const p = st.parts.find(x => x.id === id);
+    if (p) return p.glyph + '(来自' + ((st.chars.find(c => c.id === p.from) || {}).char || '?') + ')';
+    const c = st.chars.find(x => x.id === id);
+    if (c) return c.char + '(整字)';
+    return id;
+  }
 
   // 删除合并及其全部依赖（合成结果被后续合并引用时级联删除）
   function deleteMergeCascade(st, id) {
@@ -504,14 +518,14 @@ function itemLabel(st, id) {
     // ---- 按行数自动降字号 ----
     // 约束：谜面 ≤ maxMianLines 行、行2 ≤ maxSecondLines 行；在此前提下取最大字号，
     // 下限 minCharFS / minAnswerFS 保底（太长的谜面宁可行数多一点，也不把字缩到看不清）。
-    const linesAt = (total, fs, inset, maxLines) => {
-      if (total <= 0) return 1;
+    // 一个"单元数 + 字号"占几行（per = 每行容量）
+    const linesAt = (total, fs, inset) => {
       const per = Math.max(1, Math.floor(usable / (fs + inset)));
-      return { lines: Math.ceil(total / per), per };
+      return { lines: total > 0 ? Math.ceil(total / per) : 1, per };
     };
     const fitFont = (total, baseFS, minFS, maxLines, inset) => {
       let fs = baseFS;
-      while (fs > minFS && linesAt(total, fs, inset, maxLines).lines > maxLines) fs -= 2;
+      while (fs > minFS && linesAt(total, fs, inset).lines > maxLines) fs -= 2;
       return Math.max(minFS, fs);
     };
     const ansCount = [...st.answer].length;
@@ -841,7 +855,7 @@ function itemLabel(st, id) {
     decompData, componentIndex, findCandidates,
     createState, rebuildParts, assignRole,
     variantsOf, partsOfChar, parseParts, setManualParts, clearManualParts, manualCount, commonParts, MAX_PARTS,
-    usedIdsOf, mergableItems, itemLabel, confirmMerge, deleteMergeCascade,
+    usedIdsOf, mergableItems, glyphOf, itemLabel, confirmMerge, deleteMergeCascade,
     autoPair, pairResult, unpairResult, prunePairs, effectivePairs, liveMerges,
     buildTimelineFromState,
   };

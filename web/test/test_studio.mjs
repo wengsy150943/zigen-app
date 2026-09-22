@@ -229,6 +229,8 @@ check('R: parseParts 支持空格/顿号/连写', Studio.parseParts('木 口').j
 check('R: 不去重（林 = 木+木 是两个部件实例）', Studio.parseParts('木木').join() === '木,木');
 check('R: 超过 8 个部件按 8 个截断', Studio.parseParts('一二三四五六七八九十').length === Studio.MAX_PARTS);
 check('R: 空白输入解析为空（调用方据此报错，不静默写空）', Studio.parseParts('   ').length === 0);
+check('R: 分隔符与连写混用也逐字拆（「木口 火」= 木/口/火，不把「木口」当成一个部件）',
+  Studio.parseParts('木口 火').join() === '木,口,火', Studio.parseParts('木口 火').join());
 
 const stR = Studio.createState('龘');            // 拆字库未收录
 check('R: 龘 确实不在拆字库里', !DECOMP_DATA['龘']);
@@ -252,6 +254,9 @@ check('R: 拆字库的拆法仍留在列表里（随时用回）',
 
 stR2.answer = '杏';
 Studio.confirmMerge(stR2, ['m0-p0', 'm0-p1'], '杏');
+check('R: glyphOf 给出纯字形（合成结果 / 部件 / 整字三条路）',
+  Studio.glyphOf(stR2, 'r0') === '杏' && Studio.glyphOf(stR2, 'm0-p0') === '木' && Studio.glyphOf(stR2, 'm0') === '古',
+  [Studio.glyphOf(stR2, 'r0'), Studio.glyphOf(stR2, 'm0-p0'), Studio.glyphOf(stR2, 'm0')].join(','));
 const tlR = Studio.buildTimelineFromState(stR2, CFG);
 const decR = tlR.scenes.find(s => s.type === 'decompose');
 const midR = decR ? tlR.stateAt(decR.duration / 2).items.map(i => i.glyph) : [];

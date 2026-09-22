@@ -41,6 +41,9 @@
   }
   :focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: 4px; }
   [hidden] { display: none !important; }
+  /* 脚本用 class 控制显隐的地方必须有这条规则：只写 [hidden] 属性选择器的话，
+     classList.toggle('hidden') 不起任何作用（配对面板就曾因此常驻显示空看板） */
+  .hidden { display: none !important; }
 
   /* ---------- 顶栏 ---------- */
   .topbar {

@@ -1,14 +1,14 @@
 /**
  * app.js — 字谜离合动画工坊（网页版）UI 层。
  *
- * 工作流（选定式，无拖拽）:
- *   1. 输入谜面 → 逐字显示为可点击字块
- *   2. 选一支身份笔（字素 / 衬字）→ 点字即定身份，身份绑定颜色（载入时不预设身份）
- *   3. 字素自动拆解出部件 → 点选（或拖框划选）可合成对象 → 合并（候选/手填合成字）
- *   4. 填谜底 → 合成结果↔谜底字配对（多段谜底）→ 生成动画 → 预览 → 导出
+ * 工作流（选定式，无拖拽）—— 与步骤轨的 ①②③ 一一对应:
+ *   ① 输入谜面（谜底可先填） → 逐字显示为可点击字块
+ *   ② 拿一支身份笔（字素 / 衬字）→ 点字即定身份，身份绑定颜色（载入时不预设身份）；
+ *      字素自动拆解出部件 → 点选（或拖框划选）可合成对象 → 合并（候选/手填合成字）
+ *   ③ 确认谜底 → 合成结果↔谜底字配对（多段谜底）→ 生成动画 → 预览 → 导出
  *
  * 引导层（v0.2）:
- *   - 步骤轨 rail：常驻显示四步状态（未开始/进行中/已完成/待解锁），可点击跳转
+ *   - 步骤轨 rail：常驻显示三步状态（未开始/进行中/已完成/待解锁），可点击跳转
  *   - 步骤门控：前置条件不满足时卡片收成一行原因说明，避免"下一步该干嘛"的困惑
  *   - 常驻引导条（含动作按钮）：唯一回答"下一步做什么"的地方；步骤间跳转只走步骤轨
  *   - 画布空态、可关闭的使用说明面板
@@ -67,7 +67,6 @@ const S = {
   playing: false,
   fps: 12,
   loop: false,
-  scale: 1,
   selected: [],       // 待合并选中 id
   roleMode: 'zi',     // 当前拿着的身份笔：'zi' / 'ci' / null。选一支再点字，点一下就定
   partPicker: null,   // 展开了「选部件」字根面板的字 id
@@ -133,6 +132,26 @@ function el(tag, cls, html) {
   if (cls) d.className = cls;
   if (html != null) d.innerHTML = html;
   return d;
+}
+
+/**
+ * 制作状态快照 / 回滚。
+ * 「改身份」与「改拆法」都会**级联删掉**用到这个字的合并 —— 那是真的数据丢失，
+ * 只说一句"清掉了 N 次合并"不够：引导条上的「撤销这一步」必须把合并一起还回来。
+ * 做法是改动前深拷贝一份 work（纯数据：chars/parts/merges/pairs/unpaired/manual/answer…，
+ * JSON 往返即可），撤销时整体回滚 —— 比"手工反向补一份删除记录"更不容易漏字段。
+ */
+const snapshotWork = () => (work ? JSON.parse(JSON.stringify(work)) : null);
+function restoreWork(snap) {
+  if (!snap || !work) return false;
+  work = snap;
+  S.selected = [];
+  S.pairPick = null;
+  renderWorkspace();
+  renderPairPanel();
+  invalidateTimeline();
+  renderPreview();
+  return true;
 }
 
 // ---------------------------------------------------------------- 引导：步骤状态
@@ -335,7 +354,7 @@ function renderRoleBar() {
 function renderChips() {
   DOM.chipsWrap.innerHTML = '';
   if (!work) return;
-  for (const c of work.chars) {
+  work.chars.forEach((c, i) => {
     const tagged = c.role !== 'none';
     const chip = el('button', 'chip' + (tagged ? ' tagged' : ''));
     chip.type = 'button';
@@ -353,10 +372,10 @@ function renderChips() {
       ? (c.role === S.roleMode ? `「${c.char}」已是${pen} —— 再点一下取消` : `点一下：把「${c.char}」设为${pen}`)
       : `「${c.char}」当前身份：${ROLE[c.role].label}（先在上面选一支笔才能改）`;
     chip.setAttribute('aria-label',
-      `谜面第 ${work.chars.indexOf(c) + 1} 个字「${c.char}」，身份 ${ROLE[c.role].label}`);
+      `谜面第 ${i + 1} 个字「${c.char}」，身份 ${ROLE[c.role].label}`);
     chip.addEventListener('click', () => applyRole(c));
     DOM.chipsWrap.appendChild(chip);
-  }
+  });
 }
 
 /** 点一个谜面字：拿当前这支笔给它上色；笔与字身份相同时再点 = 取消（回到未标注） */
@@ -369,6 +388,7 @@ function applyRole(c) {
   const prev = c.role;
   const next = c.role === S.roleMode ? 'none' : S.roleMode;
   const affected = mergesUsingChar(work, c.id);
+  const snap = snapshotWork();      // 撤销用：连被级联删掉的合并一起回滚
   Studio.assignRole(work, c.id, next);
   for (const id of affected) Studio.deleteMergeCascade(work, id);
   S.selected = [];
@@ -376,22 +396,18 @@ function applyRole(c) {
   renderPairPanel();
   invalidateTimeline();
 
+  const undoNote = affected.length
+    ? `已撤销：「${c.char}」回到${prev === 'none' ? '未标注' : '「' + ROLE[prev].label + '」'}，${affected.length} 次合并也一并恢复。`
+    : `已撤销：「${c.char}」回到${prev === 'none' ? '未标注' : '「' + ROLE[prev].label + '」'}。`;
+  const undo = { label: '撤销这一步', fn: () => { if (restoreWork(snap)) setStatus(undoNote, true); } };
+
   if (next === 'none') {
-    setStatus(`已取消「${c.char}」的身份（回到未标注）。`, true);
+    setStatus(`已取消「${c.char}」的身份（回到未标注）。`, true, undo);
     return;
   }
   const base = `「${c.char}」已设为「${ROLE[next].label}」。`;
   const tail = affected.length ? `同时清掉了用到这个字的 ${affected.length} 次合并。` : '';
-  setStatus(base + tail, true, {
-    label: '撤销这一步',
-    fn: () => {
-      Studio.assignRole(work, c.id, prev);
-      renderWorkspace();
-      renderPairPanel();
-      invalidateTimeline();
-      setStatus(`已撤销：「${c.char}」回到${prev === 'none' ? '未标注' : '「' + ROLE[prev].label + '」'}。`, true);
-    },
-  });
+  setStatus(base + tail, true, undo);
   // 这里刻意不滚动：标字素是连着点好几个字的动作，每次都把屏幕拽走反而打断手感
 }
 
@@ -599,6 +615,7 @@ function removeManualPart(c, glyph) {
  */
 function changeDecomp(c, note, apply) {
   const affected = mergesUsingChar(work, c.id);
+  const snap = snapshotWork();      // 撤销用：拆法与被级联删掉的合并一起回滚
   apply();
   for (const id of affected) Studio.deleteMergeCascade(work, id);
   S.selected = [];
@@ -609,7 +626,15 @@ function changeDecomp(c, note, apply) {
   invalidateTimeline();
   renderPreview();
   const base = note + '。';
-  setStatus(affected.length ? `${base}同时清掉了用到这个字的 ${affected.length} 次合并。` : base, true);
+  const tail = affected.length ? `同时清掉了用到这个字的 ${affected.length} 次合并。` : '';
+  setStatus(base + tail, true, {
+    label: '撤销这一步',
+    fn: () => {
+      if (restoreWork(snap)) {
+        setStatus(`已撤销：「${c.char}」的拆法回到改动前${affected.length ? `，${affected.length} 次合并也一并恢复` : ''}。`, true);
+      }
+    },
+  });
 }
 
 function makeSelChip(id, glyph, kind, used, onRemove) {
@@ -737,7 +762,10 @@ function initMarquee() {
   });
 
   wrap.addEventListener('click', e => {
-    if (!swallow || e.target !== downChip) return;   // 只吞"起点零件上那一次补发的 click"
+    // 只吞"起点零件上那一次补发的 click" —— 浏览器把 click 派发到最深命中的元素，
+    // 起点是零件里的字形 <span> 时 e.target 并不是 .sel-chip 本身，所以必须按 contains 判断，
+    // 否则框选出来的那个零件会被这一次 click 反选掉（框选白做）
+    if (!swallow || !downChip || !downChip.contains(e.target)) return;
     swallow = false;
     e.stopPropagation();
     e.preventDefault();
@@ -760,13 +788,14 @@ function renderTray() {
   updateSelStatus();
   if (!n || !work) return;
   const sel = S.selected.map(id => Studio.itemLabel(work, id));
-  const cand = Studio.findCandidates(sel.map(l => l.replace(/\(.*\)$/, '')));
+  const glyphs = S.selected.map(id => Studio.glyphOf(work, id));   // 纯字形：候选字匹配用
+  const cand = Studio.findCandidates(glyphs);
   DOM.mergeExpr.textContent = `${sel.join(' + ')} = ?`;
   DOM.candidateWrap.innerHTML = '';
   const show = [...cand.exact, ...cand.superset.filter(g => !cand.exact.includes(g))];
   if (n === 1) {
     // 单选：对象自身即合成结果（直接提取）。默认结果字形 = 对象字形。
-    const self = sel[0].replace(/\(.*\)$/, '');
+    const self = glyphs[0];
     if (!DOM.resultInput.value.trim()) DOM.resultInput.value = self;
     const chip = el('button', 'cand-chip exact', esc('≡ ' + self));
     chip.type = 'button';
@@ -1070,7 +1099,7 @@ function buildTimeline() {
   const r = S.timeline.rows;
   const rowInfo = r && (r.mian > 1 || r.second > 1) ? `（谜面 ${r.mian} 行${r.second > 1 ? ` / 结果 ${r.second} 行` : ''}` + (r.shrunk ? ` / 字号 ${r.charFS}` : '') + '）' : '';
   setStatus(`动画已生成：${S.timeline.scenes.length} 个场景 / ${S.timeline.duration.toFixed(1)} 秒 / 画布 ${CONFIG.W}×${CONFIG.H}${rowInfo}。点「播放」预览，满意后导出。`, true,
-    { label: '预览播放', fn: () => { gotoStep(4); if (!S.playing) togglePlay(); } });
+    { label: '预览播放', fn: () => { gotoStep(3); if (!S.playing) togglePlay(); } });
 }
 
 /** 预览舞台与导出画布同比例（含长谜面换行后的动态高度） */
@@ -1150,10 +1179,7 @@ function updateTransport() {
 }
 
 function togglePlay() {
-  if (!S.timeline) {
-    setStatus('还没有动画。先在 ④ 填写谜底并点「生成动画」。', false, { label: '去 ④ 生成动画', fn: () => gotoStep(4) });
-    return;
-  }
+  if (!S.timeline) return needTimeline();
   S.playing = !S.playing;
   updateTransport();
   if (S.playing) {
@@ -1179,10 +1205,7 @@ function seek(t) {
   renderPreview();
 }
 function stepFrames(d) {
-  if (!S.timeline) {
-    setStatus('还没有动画。先在 ④ 填写谜底并点「生成动画」。', false, { label: '去 ④ 生成动画', fn: () => gotoStep(4) });
-    return;
-  }
+  if (!S.timeline) return needTimeline();
   seek(S.t + d / S.fps);
 }
 
@@ -1197,12 +1220,49 @@ function loadImage(src) {
 }
 const tickYield = () => new Promise(r => setTimeout(r, 0));
 
-async function exportAPNG() {
-  if (!S.timeline) { needTimeline(); return; }
-  if (typeof CompressionStream === 'undefined') {
-    setStatus('当前浏览器不支持 CompressionStream（需 Chrome 80+ / Firefox 113+ / Safari 16.4+），请改用 GIF 导出或升级浏览器。', false);
-    return;
-  }
+/**
+ * 逐帧格式（APNG / GIF）的差异全部收在这张表里：帧循环、进度、下载、报错都是同一套。
+ *  - enc:        (W,H,帧数,fps) => 编码器实例（两个编码器的构造签名一致）
+ *  - loopEvery:  每几帧让出一次主线程（GIF 的 LZW 是同步的，攒几帧让一次更省）
+ *  - guard:      前置能力检查，返回一句人话（附替代方案）或 null
+ */
+const EXPORTS = {
+  apng: {
+    enc: (W, H, n, fps) => new ApngEncoder(W, H, n, S.loop ? 0 : 1, fps),
+    loopEvery: 1,
+    mime: 'image/apng',
+    ext: 'apng',
+    guard: () => (typeof CompressionStream === 'undefined'
+      ? '当前浏览器不支持 CompressionStream（需 Chrome 80+ / Firefox 113+ / Safari 16.4+），请改用 GIF 导出或升级浏览器。'
+      : null),
+    done: (n, bytes, W, H) =>
+      `✓ 完成：${n} 帧 / ${(bytes.length / 1024).toFixed(0)} KB / ${W}×${H} APNG（真彩色 + 256 级透明，边缘最平滑）`,
+    note: 'APNG 已导出到下载目录，可直接发公众号或聊天工具。',
+  },
+  gif: {
+    enc: (W, H, n, fps) => new GifEncoder(W, H, n, S.loop ? 0 : 1, Math.min(100, Math.max(1, Math.round(fps)))),
+    loopEvery: 4,
+    mime: 'image/gif',
+    ext: 'gif',
+    guard: () => (typeof GifEncoder === 'undefined'
+      ? 'GIF 编码器未加载（gif.js），请刷新页面重试。'
+      : null),
+    done: (n, bytes, W, H) =>
+      `✓ 完成：${n} 帧 / ${(bytes.length / 1024).toFixed(0)} KB / ${W}×${H} GIF（1 位透明 + 256 色，通用性最好）`,
+    note: 'GIF 已导出到下载目录，可直接发公众号或聊天工具。',
+  },
+};
+
+/**
+ * 逐帧渲染 → 编码 → 下载（APNG / GIF 共用）。
+ * 每帧都走 stateAt + svgForState —— 与预览、SVG 导出同一套渲染，保证导出即所见。
+ */
+async function exportFrames(kind) {
+  const fmt = EXPORTS[kind];
+  if (!S.timeline) return needTimeline();
+  const miss = fmt.guard();
+  if (miss) { setStatus(miss, false); return; }
+
   const fps = +DOM.fpsSel.value;
   const scale = +DOM.scaleSel.value;
   const totalFrames = Math.max(2, Math.ceil(S.timeline.duration * fps));
@@ -1211,82 +1271,38 @@ async function exportAPNG() {
   const canvas = document.createElement('canvas');
   canvas.width = W; canvas.height = H;
   const g = canvas.getContext('2d');
-
-  const enc = new ApngEncoder(W, H, totalFrames, S.loop ? 0 : 1, fps);
-
-  DOM.btnExport.disabled = true;
-  DOM.exportProgress.style.width = '0%';
-  DOM.exportStatus.textContent = `渲染 ${totalFrames} 帧…`;
-  try {
-    for (let f = 0; f < totalFrames; f++) {
-      const fs = S.timeline.stateAt(f / fps);
-      const img = await loadImage('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgForState(fs, W, H, CONFIG)));
-      g.clearRect(0, 0, W, H);
-      g.drawImage(img, 0, 0, W, H);
-      const px = g.getImageData(0, 0, W, H).data;
-      await enc.addFrame(px);
-      DOM.exportProgress.style.width = (((f + 1) / totalFrames) * 100).toFixed(1) + '%';
-      DOM.exportStatus.textContent = `渲染中 ${f + 1}/${totalFrames}`;
-      await tickYield();
-    }
-    const bytes = await enc.finish();
-    download(new Blob([bytes], { type: 'image/apng' }),
-      `${work.answer || '字谜'}-离合动画-${W}x${H}-${fps}fps.apng`);
-    DOM.exportStatus.textContent = `✓ 完成：${totalFrames} 帧 / ${(bytes.length / 1024).toFixed(0)} KB / ${W}×${H} APNG（真彩色 + 256 级透明，边缘最平滑）`;
-    setStatus('APNG 已导出到下载目录，可直接发公众号或聊天工具。', true);
-  } catch (err) {
-    DOM.exportStatus.textContent = '✗ 导出失败: ' + err.message;
-    setStatus('APNG 导出失败：' + err.message, false);
-    console.error(err);
-  } finally {
-    DOM.btnExport.disabled = false;
-  }
-}
-
-async function exportGIF() {
-  if (!S.timeline) { needTimeline(); return; }
-  if (typeof GifEncoder === 'undefined') {
-    setStatus('GIF 编码器未加载（gif.js），请刷新页面重试。', false);
-    return;
-  }
-  const fps = +DOM.fpsSel.value;
-  const scale = +DOM.scaleSel.value;
-  const totalFrames = Math.max(2, Math.ceil(S.timeline.duration * fps));
-  const W = CONFIG.W * scale, H = CONFIG.H * scale;
-
-  const canvas = document.createElement('canvas');
-  canvas.width = W; canvas.height = H;
-  const g = canvas.getContext('2d');
-
-  const enc = new GifEncoder(W, H, totalFrames, S.loop ? 0 : 1, Math.min(100, Math.max(1, Math.round(fps))));
+  const enc = fmt.enc(W, H, totalFrames, fps);
 
   DOM.btnExport.disabled = true;
   DOM.exportProgress.style.width = '0%';
   DOM.exportStatus.textContent = `渲染 ${totalFrames} 帧…`;
   try {
     for (let f = 0; f < totalFrames; f++) {
-      const fs = S.timeline.stateAt(f / fps);
-      const img = await loadImage('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgForState(fs, W, H, CONFIG)));
+      const img = await loadImage('data:image/svg+xml;charset=utf-8,' +
+        encodeURIComponent(svgForState(S.timeline.stateAt(f / fps), W, H, CONFIG)));
       g.clearRect(0, 0, W, H);
       g.drawImage(img, 0, 0, W, H);
-      enc.addFrame(g.getImageData(0, 0, W, H).data);
+      await enc.addFrame(g.getImageData(0, 0, W, H).data);   // GIF 的 addFrame 是同步的，await 无副作用
       DOM.exportProgress.style.width = (((f + 1) / totalFrames) * 100).toFixed(1) + '%';
       DOM.exportStatus.textContent = `渲染中 ${f + 1}/${totalFrames}`;
-      if (f % 4 === 3) await tickYield();
+      if (f % fmt.loopEvery === fmt.loopEvery - 1) await tickYield();
     }
-    const bytes = enc.finish();
-    download(new Blob([bytes], { type: 'image/gif' }),
-      `${work.answer || '字谜'}-离合动画-${W}x${H}-${fps}fps.gif`);
-    DOM.exportStatus.textContent = `✓ 完成：${totalFrames} 帧 / ${(bytes.length / 1024).toFixed(0)} KB / ${W}×${H} GIF（1 位透明 + 256 色，通用性最好）`;
-    setStatus('GIF 已导出到下载目录，可直接发公众号或聊天工具。', true);
+    const bytes = await enc.finish();                       // 同上：GIF 同步返回，await 兼容两者
+    download(new Blob([bytes], { type: fmt.mime }),
+      `${work.answer || '字谜'}-离合动画-${W}x${H}-${fps}fps.${fmt.ext}`);
+    DOM.exportStatus.textContent = fmt.done(totalFrames, bytes, W, H);
+    setStatus(fmt.note, true);
   } catch (err) {
     DOM.exportStatus.textContent = '✗ 导出失败: ' + err.message;
-    setStatus('GIF 导出失败：' + err.message, false);
+    setStatus(`${fmt.ext.toUpperCase()} 导出失败：${err.message}`, false);
     console.error(err);
   } finally {
     DOM.btnExport.disabled = false;
   }
 }
+
+const exportAPNG = () => exportFrames('apng');
+const exportGIF = () => exportFrames('gif');
 
 /** SVG 导出（当前画面，矢量） */
 function exportSVG() {
@@ -1301,8 +1317,10 @@ function exportSVG() {
   setStatus('SVG 已导出（当前这一帧的矢量静图）。', true);
 }
 
+/** 没有动画时的统一出路：播放/单步/导出三个入口共用（跳转只指向真实存在的第 ③ 步） */
 function needTimeline() {
-  setStatus('还没有动画。先在 ④ 填写谜底并点「生成动画」。', false, { label: '去 ④ 生成动画', fn: () => gotoStep(4) });
+  setStatus('还没有动画。填好谜底后在第 ③ 步点「生成动画」。', false,
+    { label: '去 ③ 生成动画', fn: () => gotoStep(3) });
 }
 
 function download(blob, filename) {
@@ -1386,7 +1404,7 @@ function init() {
     DOM.exportStatus.textContent = '帧率越高越流畅、体积越大。公众号建议 12 fps。';
   });
   DOM.loopChk.addEventListener('change', () => { S.loop = DOM.loopChk.checked; });
-  DOM.scaleSel.addEventListener('change', () => { S.scale = +DOM.scaleSel.value; updateSizeHint(); });
+  DOM.scaleSel.addEventListener('change', updateSizeHint);   // 导出尺寸只在导出时读，这里只刷新提示
   DOM.fmtSel.addEventListener('change', () => {
     DOM.exportStatus.textContent = {
       gif: 'GIF：透明只有 1 位、颜色 256 色，但任何聊天工具和旧设备都能打开。',

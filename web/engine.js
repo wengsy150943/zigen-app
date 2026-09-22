@@ -251,7 +251,9 @@
    * @param {object} opts
    *   initialItems: [{id,glyph,x,y,opacity,scale,color,fontSize}] 初始单元（谜面各字）
    *   scenes:       场景数组（将按顺序播放）
-   *   overlays:     常驻/随时间变化的文字覆盖层 [{text,x,y,fontSize,fill,opacity?,opacityAt?(t)}]
+   *   overlays:     常驻/随时间变化的文字覆盖层
+   *                 [{text,x,y,fontSize,fill,anchor?,opacity?,opacityAt?(t)}]
+   *                 anchor 原样透传给渲染层（svg.js 用它决定 text-anchor），缺省由渲染层取 middle
    */
   function buildTimeline(opts) {
     const scenes = opts.scenes || [];
@@ -307,7 +309,7 @@
         items.push({ id, glyph: e.glyph, x: e.x, y: e.y, opacity: e.opacity, scale: e.scale, color: e.color, fontSize: e.fontSize });
       }
       const ov = overlays.map(o => ({
-        text: o.text, x: o.x, y: o.y, fontSize: o.fontSize, fill: o.fill,
+        text: o.text, x: o.x, y: o.y, fontSize: o.fontSize, fill: o.fill, anchor: o.anchor,
         opacity: o.opacityAt ? o.opacityAt(t) : (o.opacity != null ? o.opacity : 1),
       })).filter(o => o.opacity > 0.004);
 
