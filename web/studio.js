@@ -46,6 +46,22 @@
     return idx;
   }
 
+  /**
+   * 常用部件（字根）：按"拆字库里有多少字用到它"降序取前 limit 个。
+   * 手写拆法时不必凭空想字 —— 从这个列表点选即可，跟点选谜面里已有的部件是同一条路。
+   */
+  let _common = null;
+  function commonParts(limit = 60) {
+    if (!_common) {
+      const idx = componentIndex();
+      _common = [...idx.entries()]
+        .filter(([g]) => [...g].length === 1)      // 只要单字部件
+        .sort((a, b) => b[1].size - a[1].size || (a[0] < b[0] ? -1 : 1))
+        .map(([g]) => g);
+    }
+    return _common.slice(0, limit);
+  }
+
   // ---------- 笔画层展开（部件递归展开到不可再分，如 亻→丿丨、十→一丨） ----------
   const ATOM_DEPTH_LIMIT = 4;
   function atomsOf(g, depth = 0) {
@@ -154,7 +170,6 @@
     return {
       mianText: text,
       chars: [...text].map((ch, i) => ({ id: 'm' + i, char: ch, role: 'none' })),
-      variantIdx: {},
       parts: [],
       merges: [],
       mergeSeq: 0,
@@ -197,43 +212,60 @@
     return out;
   }
 
+  /**
+   * 一个字摊在字素池里的全部部件 —— **不区分拆法**：手写的那条 + 拆字库的每种拆法
+   * 一次性全部列出，点哪块都行（省掉"先选拆法、再挑部件"这一步）。
+   *
+   * 去重规则：同一条拆法内部**不去重**（手写的 林 = 木 + 木 仍是两块），
+   * 跨拆法之间同字形只留一块（「十」在两种拆法里都有 → 池子里只有一块十）。
+   * 手写那条排在 variantsOf 的第一位，所以它的部件排在最前。
+   */
+  function partsOfChar(st, c) {
+    const out = [];
+    const seen = new Set();
+    for (const v of variantsOf(st, c.id)) {
+      const vs = v.slice(0, MAX_PARTS);
+      for (const g of vs) {
+        if (seen.has(g)) continue;
+        out.push(g);
+      }
+      for (const g of vs) seen.add(g);
+    }
+    return out;
+  }
+
   /** 写入手写拆法（parts 可为字符串或数组）；空数组 = 删掉手写拆法、回到拆字库 */
   function setManualParts(st, charId, parts) {
     const arr = Array.isArray(parts) ? parseParts(parts.join(' ')) : parseParts(parts);
     if (!st.manual) st.manual = {};
     if (!arr.length) delete st.manual[charId];
     else st.manual[charId] = arr;
-    st.variantIdx[charId] = 0;   // 手写拆法排第一位，切回它
     rebuildParts(st);
     return arr;
   }
 
   function clearManualParts(st, charId) {
     if (st.manual) delete st.manual[charId];
-    st.variantIdx[charId] = 0;
     rebuildParts(st);
   }
 
-  // 依据角色 + 变体选择重建部件表（字素字 -> 拆解部件）
+  // 依据角色重建部件表（字素字 -> 全部拆法的部件，不再区分拆法）
   function rebuildParts(st) {
     st.parts = [];
     for (const c of st.chars) {
       if (c.role !== 'zi') continue;
-      const v = variantsOf(st, c.id)[st.variantIdx[c.id] || 0];
-      if (!v) continue;
-      v.slice(0, MAX_PARTS).forEach((g, i) => {
-        st.parts.push({ id: `${c.id}-p${i}`, glyph: g, from: c.id });
+      // 手写那条排在所有拆法最前面，所以前 n 块就是用户自己加的 —— 它们可以被 ✕ 掉
+      const n = manualCount(st, c.id);
+      partsOfChar(st, c).forEach((g, i) => {
+        st.parts.push({ id: `${c.id}-p${i}`, glyph: g, from: c.id, manual: i < n });
       });
     }
   }
 
-  function variantCount(st, c) {
-    return variantsOf(st, c.id).length;
-  }
-
-  function setVariant(st, charId, vi) {
-    st.variantIdx[charId] = vi;
-    rebuildParts(st);
+  /** 这个字手写了几个部件（没有手写就是 0） */
+  function manualCount(st, charId) {
+    const m = st.manual && st.manual[charId];
+    return m ? Math.min(m.length, MAX_PARTS) : 0;
   }
 
   function assignRole(st, charId, role) {
@@ -248,7 +280,7 @@
  * 使用中集合（软锁定）：
  *  - 消耗集合 = 所有合并里引用过的部件/整字实例 id（每个实例只能用一次）。
  *  - 部件的某实例被用 → 只锁该实例；
- *  - 整字本身被用 → 该字全部变体的所有部件实例一并锁定（整字一次用掉全部材料）；
+ *  - 整字本身被用 → 该字摊在池子里的全部部件实例一并锁定（整字一次用掉全部材料）；
  *  - 某字的任一部件实例被用 → 整字锁定（整字里包含已消耗的材料，不可整字再用），
  *    但该字其余未用部件实例仍可独立参与后续合并（如 丿(千)+十(古)=千 后，
  *    十(千)、口(古) 仍可用于 十+口=古）。
@@ -259,7 +291,7 @@ function usedIdsOf(st) {
   const used = new Set(consumed);
   const allPartIdsOf = c => {
     const out = [];
-    for (const v of variantsOf(st, c.id)) v.slice(0, MAX_PARTS).forEach((g, i) => out.push(`${c.id}-p${i}`));
+    partsOfChar(st, c).forEach((g, i) => out.push(`${c.id}-p${i}`));
     return out;
   };
   for (const c of st.chars) {
@@ -520,9 +552,9 @@ function itemLabel(st, id) {
     for (const m of st.merges) for (const id of m.partIds) usedPartIds.add(id);
     for (const c of st.chars) {
       if (c.role !== 'zi') continue;
-      const v = variantsOf(st, c.id)[st.variantIdx[c.id] || 0];
-      if (!v) continue;
-      const parts = v.slice(0, MAX_PARTS)
+      const gs = partsOfChar(st, c);
+      if (!gs.length) continue;
+      const parts = gs
         .map((g, i) => ({ id: `${c.id}-p${i}`, glyph: g }))
         .filter(p => usedPartIds.has(p.id));
       if (!parts.length) continue; // 部件未被使用 -> 不拆解
@@ -683,8 +715,8 @@ function itemLabel(st, id) {
 
   return {
     decompData, componentIndex, findCandidates,
-    createState, rebuildParts, variantCount, setVariant, assignRole,
-    variantsOf, parseParts, setManualParts, clearManualParts, MAX_PARTS,
+    createState, rebuildParts, assignRole,
+    variantsOf, partsOfChar, parseParts, setManualParts, clearManualParts, manualCount, commonParts, MAX_PARTS,
     usedIdsOf, mergableItems, itemLabel, confirmMerge, deleteMergeCascade,
     autoPair, pairResult, unpairResult, prunePairs, effectivePairs, liveMerges,
     buildTimelineFromState,

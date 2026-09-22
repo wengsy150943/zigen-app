@@ -71,11 +71,6 @@ const pickPart = (fromGlyph, glyph) => {
   click(c);
 };
 const chipBadge = glyph => { const b = chipOf(glyph).querySelector('.chip-role'); return b ? b.textContent : null; };
-const setVariant = (fromGlyph, i) => {
-  const sel = blockOf(fromGlyph).querySelector('.variant-sel');
-  sel.value = String(i);
-  sel.dispatchEvent(new window.Event('change', { bubbles: true }));
-};
 const mergeAs = glyph => { $('resultInput').value = glyph; click($('confirmMergeBtn')); };
 const sceneTypes = () => (window.__tlScenes || []);
 // 把最近一次生成的时间轴抓出来（app.js 不会外露，借 studio 再算一遍同构结果不现实，
@@ -88,7 +83,9 @@ assert(stepStates() === 'active,locked,locked', '首屏步骤卡片状态与步�
 assert($('status').getAttribute('aria-live') === 'polite', '引导条是 aria-live 实时区域（无障碍）');
 assert(!$('stageEmpty').hidden, '画布空态首屏可见');
 assert(!!$('stageEmpty').querySelector('button'), '画布空态带一个可点的下一步');
-assert(doc.querySelectorAll('#step1 .examples .ex-chip').length === 3, '第 ① 步内置 3 个示例入口');
+assert(doc.querySelectorAll('#step1 .examples').length === 0 && doc.querySelectorAll('.ex-chip').length === 0,
+  '第 ① 步不再内置示例 chip（示例入口只留页头 / 画布空态 / 使用说明）');
+assert(!!$('btnDemo') && !$('btnDemo2'), '页头只保留一个示例按钮');
 assert($('step2').querySelector('.step-lock').textContent.includes('载入'), '待解锁的步骤写明解锁条件');
 assert(!$('btnAllZi').disabled === false, '未载入时「全部设为字素」不可用');
 
@@ -154,7 +151,7 @@ assert($('selStatus').textContent.includes('十(来自千) + 口(来自古)'), '
 mergeAs('古');
 assert([...doc.querySelectorAll('#mergesWrap .merge-item')][1].textContent.includes('十 + 口 → 古'), '第二条合并记录名称正确');
 assert($('step2').dataset.state === 'done', '合并后 ② 标记为已完成');
-assert(!$('step2').querySelector('.btn.next').disabled, '合并后「接下来：填谜底」按钮可用');
+assert(railStates() === 'done,done,active', '合并后步骤轨推进到 ③（实际 ' + railStates() + '）');
 
 // ---------- 改身份：会清掉用到这个字的合并 ----------
 ensureOpen('千');
@@ -247,9 +244,17 @@ assert(window.__dshTimeline.scenes.map(s => s.type).join(',') === 'decompose,dec
   '换配回两段都连上后：拆2 + 合2 + 定格，没有多余的兜底段（实际 ' + window.__dshTimeline.scenes.map(s => s.type).join(',') + '）');
 assert(Math.abs(window.__dshTimeline.duration - 5.5) < 0.01, '总时长 = 拆2.6 + 合2.4 + 定格0.5（实际 ' + window.__dshTimeline.duration + '）');
 
-// ---------- 示例 chip 一键跑通（自动配对 -> 每个槽都被合成结果落位）----------
-click(doc.querySelector('#step1 .ex-chip[data-demo="2"]')); // 木口艹化 → 杏花
-assert($('stageEmpty').hidden, '示例载入后画布已有画面');
+// ---------- 两段谜底全流程（自动配对 -> 每个槽都被合成结果落位）----------
+// （左侧示例 chip 已移除，这里用手动点击走完与「木口艹化 → 杏花」等价的流程）
+$('inputMian').value = '木口艹化';
+click($('btnMian'));
+pickPart('木', '木'); pickPart('口', '口'); mergeAs('杏');
+pickPart('艹', '艹'); pickPart('化', '化'); mergeAs('花');
+$('answerInput').value = '杏花';
+$('answerInput').dispatchEvent(new window.Event('input', { bubbles: true }));
+click($('btnBuild'));
+dump('池子:', () => poolChars());
+assert($('stageEmpty').hidden, '两段合并后画布已有画面');
 assert(pairRows().length === 2 && pairRows().every(r => r.classList.contains('matched')), '多段示例谜底 2 个字，配对看板两行都连上');
 assert($('durLabel').textContent === '2.9s', '合成结果直接落位后总时长 2.9s（实际 ' + $('durLabel').textContent + '）');
 dump('示例场景序列:', () => window.__dshTimeline.scenes.map(s => s.type).join(','));
@@ -352,30 +357,70 @@ const ansColors = new Set(Object.keys(window.__dshTimeline.answerUnits).map(k =>
 assert(ansColors.size === 1 && ansColors.has('#0c8599'), '谜底位上的字（落位的与兜底弹出的）同色（实际 ' + [...ansColors].join(',') + '）');
 dump('动画里的颜色:', () => [...polyColors].join(','));
 
-// ---------- 手写拆法：池子里给每个字自己写部件 ----------
+// ---------- 手写拆法：每行末尾常驻「再写一个」，不用先点按钮 ----------
 $('inputMian').value = '古木';
 $('answerInput').value = '';
 click($('btnMian'));
-const decompBtn = g => blockOf(g).querySelector('.decomp-btn');
 const decompInput = g => blockOf(g).querySelector('.decomp-input');
-assert(!!decompBtn('古') && decompBtn('古').textContent.includes('自定义拆法'), '池子里每个字都带「自定义拆法」入口');
+const mineChips = g => [...blockOf(g).querySelectorAll('.sel-chip.mine')];
+const mineGlyphs = g => mineChips(g).map(c => c.querySelector('.chip-glyph').textContent).join('+');
+const typeParts = (g, text) => {
+  decompInput(g).value = text;
+  decompInput(g).dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+};
+const decompBtn = (g, label) => [...blockOf(g).querySelectorAll('.decomp-btn')]
+  .find(b => b.textContent.includes(label));
+
+assert(!!decompInput('古'), '每行末尾常驻「再写一个」输入框（不用先点「自定义拆法」）');
+assert(![...blockOf('古').querySelectorAll('button')].some(b => /自定义拆法|改我的拆法/.test(b.textContent)),
+  '不再有「自定义拆法」/「改我的拆法」按钮（少点一次）');
 assert(rowChips('古') === '古,十,口', '古 先用拆字库的拆法（十+口）');
 
-decompBtn('古').click();
-assert(!!decompInput('古'), '点「自定义拆法」就地展开输入框（不离开池子）');
-decompInput('古').dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-assert(!decompInput('古'), 'Esc 收起编辑器、不改任何东西');
+// 连续添加：回车一次加一块，输入框留在原地可以接着写
+typeParts('古', '木');
+assert(rowChips('古') === '古,木,十,口', '写「木」回车 → 立刻成为这个字的部件（实际 ' + rowChips('古') + '）');
+assert(!!decompInput('古') && decompInput('古').value === '', '加完输入框还在、且已清空（可以连着写）');
+typeParts('古', '口');
+dump('连续添加后:', () => rowChips('古') + ' | ' + $('status').textContent);
+assert(rowChips('古') === '古,木,口,十', '接着写「口」→ 手写两块在前，拆字库多出的 十 一并摊出（实际 ' + rowChips('古') + '）');
+assert(mineGlyphs('古') === '木+口', '手写加的部件标出来可撤销（实际 ' + mineGlyphs('古') + '）');
+assert(!!decompBtn('古', '用回拆字库'), '同时给出「用回拆字库」的退路（改错了不用重来）');
+assert(!blockOf('古').querySelector('.variant-sel'),
+  '不再有「拆法」下拉 —— 不区分拆法，所有拆法的部件一次列出');
 
-decompBtn('古').click();
-decompInput('古').value = '木口';
-decompInput('古').dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-dump('手写拆法后:', () => rowChips('古') + ' | ' + $('status').textContent);
-assert(rowChips('古') === '古,木,口', '手写「木口」后部件换成 木+口（实际 ' + rowChips('古') + '）');
-assert(!decompInput('古') && decompBtn('古').textContent.includes('改我的拆法'), '保存后收起编辑器，按钮变成「改我的拆法」');
-assert(!![...blockOf('古').querySelectorAll('.decomp-btn')].find(b => b.textContent.includes('用回拆字库')),
-  '同时给出「用回拆字库」的退路（改错了不用重来）');
-assert(blockOf('古').querySelector('.variant-sel').textContent.includes('自定'),
-  '拆法下拉里手写那条标「自定」，与拆字库的拆法并列（实际 ' + blockOf('古').querySelector('.variant-sel').textContent + '）');
+// 一次写多个也认（「木 口」/「木口」等价）
+click(decompBtn('古', '用回拆字库'));
+assert(rowChips('古') === '古,十,口', '「用回拆字库」恢复默认拆法（实际 ' + rowChips('古') + '）');
+typeParts('古', '木口');
+assert(rowChips('古') === '古,木,口,十', '一次写「木口」→ 两块（实际 ' + rowChips('古') + '）');
+
+// 块上的 ✕ 撤销我写的那一块（拆字库摊出来的部件没有 ✕）
+click(mineChips('古')[0].querySelector('.de-x'));
+assert(rowChips('古') === '古,口,十', '点手写块上的 ✕ 去掉它（实际 ' + rowChips('古') + '）');
+assert(!partChip('古', '十').querySelector('.de-x'), '拆字库摊出来的部件没有 ✕（那不是我加的）');
+typeParts('古', '木');
+assert(rowChips('古') === '古,口,木,十', '去掉后还能接着加（实际 ' + rowChips('古') + '）');
+
+// ---------- 点选部件：不想打字就从字根面板里挑 ----------
+const pickBtn = g => blockOf(g).querySelector('.de-pick-btn');
+assert(!!pickBtn('古'), '每行带「选部件」入口');
+assert(!blockOf('古').querySelector('.de-picker'), '默认不展开面板（池子保持紧凑）');
+click(pickBtn('古'));
+const picker = () => blockOf('古').querySelector('.de-picker');
+assert(!!picker(), '点「选部件」展开字根面板');
+assert(picker().textContent.includes('本谜面已有的') && picker().textContent.includes('常用部件'),
+  '面板分两段：本谜面已有的部件 + 常用字根');
+const pickChip = g => [...picker().querySelectorAll('.de-pick')].find(b => b.dataset.pick === g);
+click(decompBtn('古', '用回拆字库'));
+assert(!!picker(), '清空手写后面板仍展开（正在挑部件时不打断）');
+click(pickChip('口'));
+assert(rowChips('古') === '古,口,十', '点一下字根就加进拆法（实际 ' + rowChips('古') + '）');
+assert(!!picker(), '点完面板不收起 —— 可以连着点');
+click(pickChip('木'));
+assert(rowChips('古') === '古,口,木,十', '连着点第二个字根（实际 ' + rowChips('古') + '）');
+assert(pickChip('口').classList.contains('done'), '已在拆法里的字根标出来（避免重复点）');
+click(pickBtn('古'));
+assert(!blockOf('古').querySelector('.de-picker'), '再点「收起」关闭面板');
 
 // 写出来的部件能直接当输入合并
 pickPart('古', '木'); pickPart('古', '口');
@@ -384,27 +429,20 @@ mergeAs('杏');
 assert(doc.querySelectorAll('#mergesWrap .merge-item').length === 1, '用手写部件完成一次合并');
 
 // 改拆法要级联清掉用到这个字的合并（否则部件实例还在、字形却换了 → 破图）
-decompBtn('古').click();
-decompInput('古').value = '十 口';
-click(blockOf('古').querySelector('.decomp-edit .btn'));
+typeParts('古', '十');
 assert(doc.querySelectorAll('#mergesWrap .merge-item').length === 0, '改拆法清掉了用到这个字的合并');
 assert($('status').textContent.includes('清掉'), '引导条说明连锁删除的后果（实际 ' + $('status').textContent + '）');
-assert(rowChips('古') === '古,十,口', '改成 十+口 生效（空格分隔同样解析）');
-click([...blockOf('古').querySelectorAll('.decomp-btn')].find(b => b.textContent.includes('用回拆字库')));
-assert(!blockOf('古').querySelector('.decomp-btn.mine') && rowChips('古') === '古,十,口', '「用回拆字库」恢复默认拆法');
 
 // 拆字库没收录的字：不是死路，而是引导你手写
 $('inputMian').value = '龘';
 click($('btnMian'));
 assert(blockOf('龘').textContent.includes('拆字库未收录'), '未收录的字如实说明');
-assert(!!decompBtn('龘'), '未收录的字同样给出手写入口（不再是一句"只能以整字参与合成"的死路）');
-decompBtn('龘').click();
-decompInput('龘').value = '龙龙龙';
-click(blockOf('龘').querySelector('.decomp-edit .btn'));
-assert(rowChips('龘') === '龘,龙,龙,龙', '未收录的字手写三个部件后就能拆（实际 ' + rowChips('龘') + '）');
+assert(!!decompInput('龘'), '未收录的字同样给出手写/点选入口（不再是一句"只能以整字参与合成"的死路）');
+typeParts('龘', '龙龙龙');
+assert(rowChips('龘') === '龘,龙,龙,龙', '未收录的字连写三个「龙」→ 三块（实际 ' + rowChips('龘') + '）');
 assert($('poolMeta').textContent.includes('4 个'), '池子计数把手写部件算进去（整字 + 3 个手写部件 = 4，实际 ' + $('poolMeta').textContent + '）');
 
-// 长谜面换行（示例 3 之后的独立场景）
+// 长谜面换行（手写拆法之后的独立场景）
 $('inputMian').value = '一口咬掉牛尾巴二人土上坐田土日月';
 click($('btnMian'));
 pickPart('一', '一'); mergeAs('一');
@@ -426,8 +464,8 @@ assert($('step2').dataset.state === 'active', '载入后 ② 立即可用（不�
 assert(cardGlyph() === '木', '载入后自动展开第一个字');
 openChar('口');
 assert(cardGlyph() === '口', '点另一个字切换展开');
-assert($('step2').querySelector('.next-hint').textContent.includes('合并'), '② 的下一步按钮写明还差什么（实际 ' + $('step2').querySelector('.next-hint').textContent + '）');
-assert(!$('step2').querySelector('.btn.next').disabled === false, '没有合并时「接下来」按钮禁用');
+assert($('step2Meta').textContent.trim() === '2 个可拆字', '没合并时 ② 副标题给出可拆字数（实际 ' + $('step2Meta').textContent.trim() + '）');
+assert(!$('step2').querySelector('.step-foot .btn.next'), '①② 不再放「接下来」按钮（跳转只走步骤轨）');
 
 dump('window errors:', () => (errs.length ? errs.join('; ') : '无'));
 assert(!errs.length, '全流程无 window 异常');

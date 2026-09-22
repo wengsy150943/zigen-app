@@ -1,0 +1,8 @@
+{
+  "name": "zigen-web",
+  "private": true,
+  "description": "离合谜动画工坊（纯静态前端）",
+  "devDependencies": {
+    "jsdom": "^30.1.1"
+  }
+}

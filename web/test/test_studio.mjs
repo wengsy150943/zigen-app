@@ -1,7 +1,7 @@
 /**
  * studio.js 制作流程端到端测试（Node，无浏览器）。
  * 场景A: 谜面 "十八口" → 直接合并 十+八=木 → 木+口=杏 → 谜底 杏
- * 场景B: 谜面 "木口"   → 木 切换变体拆成 十,八 → 十+八=木 → 木+口=杏
+ * 场景B: 谜面 "木口"   → 木 的三条拆法摊平为 十,人,八,一,小 → 十+人=木 → 木+口=杏
  * 运行: node web/test/test_studio.mjs
  */
 import { createRequire } from 'node:module';
@@ -93,14 +93,14 @@ check('A: 落位合并中段 r1 始终停在谜底槽位 x（不横移）', midA
   check('A: hold 场景无任何画面变化', holdA.type === 'hold' && key(s1) === key(s2), key(s1) + ' vs ' + key(s2));
 }
 
-// ============ 场景 B：变体切换 + 部件合并 ============
+// ============ 场景 B：全部拆法摊平 + 部件合并 ============
 console.log('— 场景 B：木口（木 拆成 十+八）—');
 const stB = Studio.createState('木口');
 Studio.assignRole(stB, 'm0', 'zi');
 Studio.assignRole(stB, 'm1', 'zi');
-check('B: 木 默认变体 = [十,人]', stB.parts.filter(p => p.from === 'm0').map(p => p.glyph).join(',') === '十,人', stB.parts.map(p => p.glyph).join(','));
-Studio.setVariant(stB, 'm0', 1);
-check('B: 切换变体后 木 = [十,八]', stB.parts.filter(p => p.from === 'm0').map(p => p.glyph).join(',') === '十,八', stB.parts.map(p => p.glyph).join(','));
+check('B: 木 的部件 = 三条拆法一次摊平（不区分拆法；跨拆法同字形只留一块：十 只出现一次）',
+  stB.parts.filter(p => p.from === 'm0').map(p => p.glyph).join(',') === '十,人,八,一,小',
+  stB.parts.filter(p => p.from === 'm0').map(p => p.glyph).join(','));
 check('B: 部件 id 唯一', new Set(stB.parts.map(p => p.id)).size === stB.parts.length);
 
 Studio.confirmMerge(stB, ['m0-p0', 'm0-p1'], '木');
@@ -244,14 +244,11 @@ const stR2 = Studio.createState('古');           // 拆字库有拆法（十+�
 for (const c of stR2.chars) Studio.assignRole(stR2, c.id, 'zi');
 check('R: 拆字库原本的拆法在', stR2.parts.map(p => p.glyph).join('') === '十口');
 Studio.setManualParts(stR2, 'm0', '木 口');
-check('R: 手写拆法覆盖拆字库（部件变成 木+口）', stR2.parts.map(p => p.glyph).join('') === '木口');
+check('R: 手写部件排在前面、拆字库多出的部件一并摊出（不区分拆法，口 只留一块）',
+  stR2.parts.map(p => p.glyph).join('') === '木口十', stR2.parts.map(p => p.glyph).join(''));
 check('R: 手写部件能直接参与候选检索', Studio.findCandidates(['木', '口']).exact.includes('杏'), JSON.stringify(Studio.findCandidates(['木', '口'])));
-check('R: 拆字库的拆法仍留在列表里（随时切回）',
+check('R: 拆字库的拆法仍留在列表里（随时用回）',
   Studio.variantsOf(stR2, 'm0').length === 2 && Studio.variantsOf(stR2, 'm0')[1].join('') === '十口');
-Studio.setVariant(stR2, 'm0', 1);
-check('R: 切回拆字库那条 = 十+口', stR2.parts.map(p => p.glyph).join('') === '十口');
-Studio.setVariant(stR2, 'm0', 0);
-check('R: 再切回手写那条 = 木+口', stR2.parts.map(p => p.glyph).join('') === '木口');
 
 stR2.answer = '杏';
 Studio.confirmMerge(stR2, ['m0-p0', 'm0-p1'], '杏');
@@ -305,7 +302,9 @@ check('D: 删除合并后整字恢复可用', ['m0', 'm1', 'm2'].every(id => Stu
 const stE2 = Studio.createState('木口');
 Studio.assignRole(stE2, 'm0', 'zi');
 Studio.assignRole(stE2, 'm1', 'zi');
-check('E: 木 默认变体含 十,人', stE2.parts.filter(p => p.from === 'm0').map(p => p.glyph).join(',') === '十,人');
+check('E: 木 的部件含 十,人（全部拆法摊平）',
+  stE2.parts.filter(p => p.from === 'm0').map(p => p.glyph).join(',').includes('十,人'),
+  stE2.parts.filter(p => p.from === 'm0').map(p => p.glyph).join(','));
 Studio.confirmMerge(stE2, ['m0-p0', 'm1'], '古'); // 木的「十」+ 口 → 古
 const itemsE = Studio.mergableItems(stE2);
 check('E: 部分提取后 木 整字锁定', !itemsE.some(x => x.id === 'm0'));
@@ -364,7 +363,8 @@ check('H: 亻+十 展开 exact 含 什', candH2.exact.includes('什'), 'exact=' 
 // 单选：从「估」直接提取 古（离合「估」去「人」得「古」）
 const stH = Studio.createState('估');
 Studio.assignRole(stH, 'm0', 'zi');
-check('H: 估 拆出 人,古', stH.parts.map(p => p.glyph).join(',') === '人,古', stH.parts.map(p => p.glyph).join(','));
+check('H: 估 拆出 人,古,亻（两种拆法摊平，古 只留一块）',
+  stH.parts.map(p => p.glyph).join(',') === '人,古,亻', stH.parts.map(p => p.glyph).join(','));
 const rH = Studio.confirmMerge(stH, ['m0-p1']); // 单选 古，无 glyph
 check('H: 单选合并成功且默认结果=古', rH.ok && stH.merges[0].glyph === '古', JSON.stringify(rH));
 check('H: 单选记录 partGlyphs 快照=古', stH.merges[0].partGlyphs.join(',') === '古');
@@ -566,6 +566,12 @@ check('无谜底时不生成 reveal', !tlD.scenes.some(s => s.type === 'reveal')
 
 const compIdx = Studio.componentIndex();
 check('倒排索引含 木（十 在索引中）', compIdx.has('十') && compIdx.get('十').has('木'));
+
+// 点选面板用的常用部件（字根）：按"多少字用到它"降序，高频的排在前面
+const commons = Studio.commonParts(72);
+check('常用部件取满 72 个且都是单字', commons.length === 72 && commons.every(g => [...g].length === 1));
+check('常用部件按使用频次降序（口 比 一 之后的冷僻部件靠前）',
+  commons.indexOf('口') >= 0 && commons.indexOf('口') < commons.length / 2, commons.slice(0, 8).join(''));
 
 if (failed) { console.error(`\n${failed} 项失败`); process.exit(1); }
 console.log('\nstudio 流程测试全部通过 ✔');

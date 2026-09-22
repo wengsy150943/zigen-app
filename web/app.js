@@ -10,7 +10,7 @@
  * 引导层（v0.2）:
  *   - 步骤轨 rail：常驻显示四步状态（未开始/进行中/已完成/待解锁），可点击跳转
  *   - 步骤门控：前置条件不满足时卡片收成一行原因说明，避免"下一步该干嘛"的困惑
- *   - 每步"接下来"按钮 + 常驻引导条（含动作按钮）
+ *   - 常驻引导条（含动作按钮）：唯一回答"下一步做什么"的地方；步骤间跳转只走步骤轨
  *   - 画布空态、可关闭的使用说明面板
  *   状态推导集中在 flowState()，渲染集中在 renderFlow()。
  *
@@ -69,7 +69,7 @@ const S = {
   scale: 1,
   selected: [],       // 待合并选中 id
   openCharId: null,   // 当前选中的谜面字（决定字卡身份与池子里高亮的那一行）
-  decompEdit: null,   // 正在手写拆法的字 id（池子里行内展开编辑器）
+  partPicker: null,   // 展开了「选部件」字根面板的字 id
   pairPick: null,     // 配对面板中选中的合成结果 id
   timeline: null,
 };
@@ -80,7 +80,7 @@ const $ = id => document.getElementById(id);
 const DOM = {
   inputMian: $('inputMian'), btnMian: $('btnMian'),
   chipsWrap: $('chipsWrap'), charCard: $('charCard'),
-  btnDemo: $('btnDemo'), btnDemo2: $('btnDemo2'),
+  btnDemo: $('btnDemo'),
   btnAllZi: $('btnAllZi'),
   poolWrap: $('poolWrap'), poolMeta: $('poolMeta'), poolHint: $('poolHint'),
   partsWrap: $('partsWrap'), pendingWrap: $('pendingWrap'),
@@ -170,7 +170,7 @@ function renderRail(fs) {
   });
 }
 
-/** 渲染步骤轨、卡片状态、每步计数与"接下来"按钮 */
+/** 渲染步骤轨、卡片状态与每步计数（步骤间跳转只由步骤轨承担） */
 function renderFlow() {
   const fs = flowState();
   renderRail(fs);
@@ -191,21 +191,9 @@ function renderFlow() {
   if (stepMetaEl(3)) stepMetaEl(3).textContent = fs.hasTl ? S.timeline.duration.toFixed(1) + ' 秒动画' : (fs.answer ? '待生成' : '');
   renderAnswerLine();
 
-  // 每步的"接下来"按钮：达不到条件就禁用，并用一行小字说明差什么
-  setNext(1, fs.loaded, fs.loaded ? '' : '填好谜面后点「载入」');
-  setNext(2, fs.merges > 0, !fs.loaded ? '先完成 ①' : (fs.merges > 0 ? '' : '在字素池里点零件，合并一次'));
   if (DOM.btnGoExport) DOM.btnGoExport.disabled = !fs.hasTl;
 
   DOM.btnAllZi.disabled = !fs.loaded;
-}
-
-function setNext(n, enabled, hint) {
-  const sec = stepEl(n);
-  if (!sec) return;
-  const btn = sec.querySelector('.step-foot .btn.next');
-  if (btn) btn.disabled = !enabled;
-  const h = sec.querySelector('.step-foot .next-hint');
-  if (h) h.textContent = hint || '';
 }
 
 /** 滚动并聚焦到某一步（待解锁时给出原因，不静默失败） */
@@ -263,7 +251,7 @@ function startMian() {
   S.selected = [];
   S.openCharId = work.chars.length ? work.chars[0].id : null;
   S.pairPick = null;
-  S.decompEdit = null;
+  S.partPicker = null;
   S.timeline = null;
   S.t = 0;
   DOM.resultInput.value = '';
@@ -438,10 +426,9 @@ function mergePoolBlock(used) {
   return block;
 }
 
-/** 字素池里的一行：来源字 + （整字 / 各部件）字块 + 拆法切换 + 手写拆法（同行排布，字数多也不叠高） */
+/** 字素池里的一行：来源字 + （整字 / 各部件）字块 + 末尾的「再写一个」输入框 */
 function poolBlock(c, used) {
   const vs = Studio.variantsOf(work, c.id);
-  const vi = work.variantIdx[c.id] || 0;
   const mine = !!(work.manual && work.manual[c.id]);
 
   const block = el('div', 'part-block' + (S.openCharId === c.id ? ' active' : ''));
@@ -455,100 +442,137 @@ function poolBlock(c, used) {
   const chipRow = el('div', 'chip-row');
   // 整字本身也是可合成对象（从多个字提取时经常直接用整字）
   chipRow.appendChild(makeSelChip(c.id, c.char, '整字', used.has(c.id)));
-  const current = vs[vi];
-  if (current && current.length) {
-    current.slice(0, Studio.MAX_PARTS).forEach((g, i) => {
-      chipRow.appendChild(makeSelChip(`${c.id}-p${i}`, g, '部件', used.has(`${c.id}-p${i}`)));
-    });
+  // 手写加的部件带 ✕（撤销我加的那块）；拆字库摊出来的部件只读
+  for (const p of work.parts.filter(p => p.from === c.id)) {
+    const rm = p.manual ? () => removeManualPart(c, p.glyph) : null;
+    chipRow.appendChild(makeSelChip(p.id, p.glyph, '部件', used.has(p.id), rm));
   }
+  // 末尾常驻「再写一个」：不用先点「自定义拆法」，直接往这一行加部件，回车可以连着加
+  chipRow.appendChild(addPartInput(c));
+  // 不想打字就点「选部件」：本谜面已有的部件 + 常用字根，点一下加一块
+  const pick = el('button', 'mini-btn decomp-btn de-pick-btn', S.partPicker === c.id ? '收起' : '选部件');
+  pick.type = 'button';
+  pick.title = '从字根面板里点选部件（不用打字）';
+  pick.addEventListener('click', () => {
+    S.partPicker = S.partPicker === c.id ? null : c.id;
+    renderPool();
+    if (S.partPicker === c.id) focusAddInput(c);
+  });
+  chipRow.appendChild(pick);
   block.appendChild(chipRow);
 
-  // 拆法切换：手写拆法排第一位（不写就没有这一项）
-  if (vs.length > 1) {
-    const sel = el('select', 'variant-sel');
-    vs.forEach((v, i) => {
-      const o = document.createElement('option');
-      o.value = i;
-      const label = i === 0 && mine ? '自定' : `拆法 ${mine ? i : i + 1}`;
-      o.textContent = `${label}：${v.join(' ')}`;
-      if (i === vi) o.selected = true;
-      sel.appendChild(o);
-    });
-    sel.setAttribute('aria-label', `「${c.char}」的拆法`);
-    sel.addEventListener('change', () => changeDecomp(c, `拆法已切换到「${vs[+sel.value].join(' ')}」`, () => {
-      Studio.setVariant(work, c.id, +sel.value);
+  if (S.partPicker === c.id) block.appendChild(partPicker(c));
+
+  if (mine) {
+    const back = el('button', 'mini-btn decomp-btn', '用回拆字库');
+    back.type = 'button';
+    back.title = '删掉手写拆法，回到拆字库的拆法';
+    back.addEventListener('click', () => changeDecomp(c, `「${c.char}」已用回拆字库的拆法`, () => {
+      Studio.clearManualParts(work, c.id);
     }));
-    block.appendChild(sel);
+    block.appendChild(back);
   }
 
-  // 手写拆法 / 改回拆字库
-  if (S.decompEdit === c.id) {
-    block.appendChild(decompEditor(c));
-  } else {
-    const edit = el('button', 'mini-btn decomp-btn' + (mine ? ' mine' : ''), mine ? '改我的拆法' : '自定义拆法');
-    edit.type = 'button';
-    edit.title = mine
-      ? `当前用的是你手写的拆法：${vs[vi].join(' ')}。点它可以改`
-      : '拆字库没收录、或拆得不对时，自己写这个字由哪些部件组成';
-    edit.addEventListener('click', () => {
-      S.decompEdit = c.id;
-      renderPool();
-      // 展开即聚焦：点完就能直接打字，不用再点一次输入框
-      const inp = DOM.partsWrap.querySelector(`.part-block[data-char-id="${c.id}"] .decomp-input`);
-      if (inp) { focusSoft(inp); if (inp.select) inp.select(); }
-    });
-    block.appendChild(edit);
-    if (mine) {
-      const back = el('button', 'mini-btn decomp-btn', '用回拆字库');
-      back.type = 'button';
-      back.title = '删掉手写拆法，回到拆字库的拆法';
-      back.addEventListener('click', () => changeDecomp(c, `「${c.char}」已用回拆字库的拆法`, () => {
-        Studio.clearManualParts(work, c.id);
-      }));
-      block.appendChild(back);
-    }
-  }
-
-  if (!vs.length) {
-    block.appendChild(el('p', 'cc-note', '拆字库未收录这个字 —— 点「自定义拆法」自己写它由哪些部件组成。'));
+  if (!vs.length && !mine) {
+    block.appendChild(el('p', 'cc-note',
+      '拆字库未收录这个字 —— 在末尾的输入框里写它由哪些部件组成，或点「选部件」从字根里挑。'));
   }
   return block;
 }
 
-/** 手写拆法的行内编辑器（写"木 口"或"木口"都行；不去重，所以 林 = 木+木 也写得出来） */
-function decompEditor(c) {
-  const wrap = el('div', 'decomp-edit');
-  const input = el('input', 'decomp-input');
+/**
+ * 每一行的末尾输入框：往这个字的拆法里**追加**部件，写完回车立刻生效、输入框保留焦点可以接着写。
+ * 不做草稿态 —— 所见即所得，也不用多点一次「自定义拆法」再「保存」。
+ */
+function addPartInput(c) {
+  const input = el('input', 'decomp-input de-add');
   input.type = 'text';
-  input.value = (work.manual && work.manual[c.id]) ? work.manual[c.id].join(' ') : '';
-  input.placeholder = '这个字由哪些部件组成，如：木 口';
-  input.setAttribute('aria-label', `「${c.char}」的部件`);
-  wrap.appendChild(input);
-  const save = el('button', 'btn small', '保存');
-  save.type = 'button';
-  const cancel = el('button', 'btn ghost small', '取消');
-  cancel.type = 'button';
-  const commit = () => {
+  input.placeholder = '+ 再写一个';
+  input.title = '写部件后回车即可添加，可以连着写（「木口」或「木 口」都行）';
+  input.setAttribute('aria-label', `给「${c.char}」添加部件`);
+
+  const submit = () => {
     const parts = Studio.parseParts(input.value);
-    if (!parts.length) {
-      setStatus('至少写一个部件（写"木 口"或"木口"都行）。', false);
-      input.focus();
-      return;
-    }
-    changeDecomp(c, `「${c.char}」的拆法已改为：${parts.join(' + ')}`, () => {
-      Studio.setManualParts(work, c.id, parts);
-    });
+    if (!parts.length) return;
+    input.value = '';
+    appendManualParts(c, parts);
+    focusAddInput(c);                        // 焦点留在输入框，接着写下一个
   };
-  save.addEventListener('click', commit);
+
   input.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); commit(); }
-    if (e.key === 'Escape') { e.preventDefault(); S.decompEdit = null; renderPool(); }
+    if (e.key === 'Enter') { e.preventDefault(); submit(); }
+    if (e.key === 'Escape') { e.preventDefault(); input.value = ''; input.blur(); }
   });
-  cancel.addEventListener('click', () => { S.decompEdit = null; renderPool(); });
-  wrap.appendChild(save);
-  wrap.appendChild(cancel);
-  wrap.appendChild(el('span', 'decomp-hint', '连着写或空格分开都行；最多 8 个'));
+  return input;
+}
+
+/** 往这个字的手写拆法尾部追加部件（打字回车、点选字根走同一条路） */
+function appendManualParts(c, parts) {
+  const cur = (work.manual && work.manual[c.id]) || [];
+  const room = Studio.MAX_PARTS - cur.length;
+  if (room <= 0) {
+    setStatus(`「${c.char}」最多 ${Studio.MAX_PARTS} 个部件 —— 先 ✕ 掉一个再加。`, false);
+    return false;
+  }
+  const add = parts.slice(0, room);
+  changeDecomp(c, `「${c.char}」的拆法已改为：${cur.concat(add).join(' + ')}`, () => {
+    Studio.setManualParts(work, c.id, cur.concat(add));
+  });
+  if (parts.length > room) setStatus(`最多 ${Studio.MAX_PARTS} 个部件，多写的没加进去。`, false);
+  return true;
+}
+
+function focusAddInput(c) {
+  const inp = DOM.partsWrap.querySelector(`.part-block[data-char-id="${c.id}"] .decomp-input`);
+  if (inp) focusSoft(inp);
+}
+
+/**
+ * 点选部件面板：本谜面已经拆出来的部件（跨字复用最常需要）+ 拆字库里最常用的字根。
+ * 点一下就直接加进这个字的拆法，面板保持展开 —— 可以连着点。
+ */
+function partPicker(c) {
+  const wrap = el('div', 'de-picker');
+  const mine = new Set((work.manual && work.manual[c.id]) || []);
+
+  const local = [];
+  const seen = new Set();
+  for (const p of work.parts) if (!seen.has(p.glyph)) { seen.add(p.glyph); local.push(p.glyph); }
+  for (const ch of work.chars) if (ch.role === 'zi' && !seen.has(ch.char)) { seen.add(ch.char); local.push(ch.char); }
+
+  if (local.length) {
+    wrap.appendChild(el('div', 'de-picker-title', '本谜面已有的'));
+    wrap.appendChild(pickerRow(c, local, mine));
+  }
+  wrap.appendChild(el('div', 'de-picker-title', '常用部件'));
+  wrap.appendChild(pickerRow(c, Studio.commonParts(72), mine));
   return wrap;
+}
+
+function pickerRow(c, glyphs, mine) {
+  const row = el('div', 'de-picker-row');
+  for (const g of glyphs) {
+    const b = el('button', 'de-pick' + (mine.has(g) ? ' done' : ''), esc(g));
+    b.type = 'button';
+    b.dataset.pick = g;
+    b.title = mine.has(g) ? `「${g}」已经在这个字的拆法里了（再点一次可再加一个）` : `把「${g}」加到「${c.char}」的部件里`;
+    b.addEventListener('click', () => appendManualParts(c, [g]));
+    row.appendChild(b);
+  }
+  return row;
+}
+
+/** 撤销我手写加的某一块（拆字库摊出来的部件没有 ✕，因为那不是我加的） */
+function removeManualPart(c, glyph) {
+  const cur = ((work.manual && work.manual[c.id]) || []).slice();
+  const i = cur.indexOf(glyph);
+  if (i < 0) return;
+  cur.splice(i, 1);
+  changeDecomp(c, cur.length
+    ? `「${c.char}」的拆法已改为：${cur.join(' + ')}`
+    : `「${c.char}」已用回拆字库的拆法`, () => {
+    Studio.setManualParts(work, c.id, cur);   // 空数组 = 删掉手写拆法
+  });
 }
 
 /**
@@ -560,7 +584,6 @@ function changeDecomp(c, note, apply) {
   const affected = mergesUsingChar(work, c.id);
   apply();
   for (const id of affected) Studio.deleteMergeCascade(work, id);
-  S.decompEdit = null;
   S.selected = [];
   const valid = new Set(Studio.mergableItems(work).map(x => x.id));
   S.pairPick = S.pairPick && valid.has(S.pairPick) ? S.pairPick : null;
@@ -572,8 +595,8 @@ function changeDecomp(c, note, apply) {
   setStatus(affected.length ? `${base}同时清掉了用到这个字的 ${affected.length} 次合并。` : base, true);
 }
 
-function makeSelChip(id, glyph, kind, used) {
-  const chip = el('button', 'sel-chip' + (used ? ' used' : '') + (S.selected.includes(id) ? ' sel' : ''));
+function makeSelChip(id, glyph, kind, used, onRemove) {
+  const chip = el('button', 'sel-chip' + (used ? ' used' : '') + (S.selected.includes(id) ? ' sel' : '') + (onRemove ? ' mine' : ''));
   chip.type = 'button';
   chip.dataset.chipId = id;
   chip.innerHTML = `<span class="chip-glyph">${esc(glyph)}</span><span class="chip-kind">${used ? '已用' : kind}</span>`;
@@ -582,6 +605,18 @@ function makeSelChip(id, glyph, kind, used) {
   chip.setAttribute('aria-pressed', S.selected.includes(id) ? 'true' : 'false');
   if (used) chip.disabled = true;
   chip.addEventListener('click', () => { if (!used) toggleSelect(id); });
+  if (onRemove) {
+    // chip 本身是 button（点它=选中），里面不能再套 button，所以 ✕ 用 span + role=button
+    const x = el('span', 'de-x' + (used ? ' off' : ''), '✕');
+    x.setAttribute('role', 'button');
+    x.tabIndex = 0;
+    x.title = used ? '这个部件已经在合并里用掉了，先删掉那次合并才能去掉它' : '去掉这个手写部件';
+    x.setAttribute('aria-label', `去掉部件 ${glyph}`);
+    const fire = e => { e.stopPropagation(); e.preventDefault(); if (!used) onRemove(); };
+    x.addEventListener('click', fire);
+    x.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') fire(e); });
+    chip.appendChild(x);
+  }
   return chip;
 }
 
@@ -985,44 +1020,6 @@ function loadDemo() {
     { label: '看第 ② 步怎么标的', fn: () => gotoStep(2) });
 }
 
-/** 一键载入多段谜底示例：「木口艹化」→ 木+口=杏、艹+化=花 → 谜底「杏花」 */
-function loadDemo2() {
-  DOM.answerInput.value = ''; // 清掉 ① 里残留的谜底，示例自带自己的谜底
-  DOM.inputMian.value = '木口艹化';
-  startMian();
-  for (const c of work.chars) Studio.assignRole(work, c.id, 'zi');
-  renderWorkspace();
-  S.selected = ['m0', 'm1'];        // 木 + 口
-  DOM.resultInput.value = '杏';
-  confirmMerge();
-  S.selected = ['m2', 'm3'];        // 艹 + 化
-  DOM.resultInput.value = '花';
-  confirmMerge();
-  setAnswer('杏花');
-  buildTimeline();
-  setStatus('多段示例已载入：木+口=杏、艹+化=花，谜底「杏花」。两个合成结果会分别位移变形到各自的谜底字。', true,
-    { label: '看配对面板', fn: () => gotoStep(4) });
-}
-
-/** 进阶示例：「千古」→ 丿(千)+十(古)=千、十(千)+口(古)=古（演示从整字里取部件） */
-function loadDemo3() {
-  DOM.answerInput.value = ''; // 清掉 ① 里残留的谜底，示例自带自己的谜底
-  DOM.inputMian.value = '千古';
-  startMian();
-  for (const c of work.chars) Studio.assignRole(work, c.id, 'zi');
-  renderWorkspace();
-  S.selected = ['m0-p0', 'm1-p0'];  // 丿(千) + 十(古)
-  DOM.resultInput.value = '千';
-  confirmMerge();
-  S.selected = ['m0-p1', 'm1-p1'];  // 十(千) + 口(古)
-  DOM.resultInput.value = '古';
-  confirmMerge();
-  setAnswer('千古');
-  buildTimeline();
-  setStatus('进阶示例：「千古」互拆 —— 丿(千)+十(古)=千，十(千)+口(古)=古。演示的是"从一个字里抠出部件"。', true,
-    { label: '看第 ③ 步怎么选的', fn: () => gotoStep(3) });
-}
-
 /**
  * 写入谜底。示例载入时也要走这里 —— 否则配对面板拿不到 answer，
  * 会出现"示例跑通了但配对面板不显示"的假象（原实现的隐藏 bug）。
@@ -1034,8 +1031,6 @@ function setAnswer(text) {
   Studio.prunePairs(work);
   renderPairPanel();
 }
-
-const DEMOS = { 1: loadDemo, 2: loadDemo2, 3: loadDemo3 };
 
 // ---------------------------------------------------------------- 播放控制
 function updateTransport() {
@@ -1240,7 +1235,6 @@ function updateSizeHint() {
 }
 function init() {
   DOM.btnDemo.addEventListener('click', loadDemo);
-  DOM.btnDemo2.addEventListener('click', loadDemo2);
   DOM.stageDemoBtn.addEventListener('click', loadDemo);
   DOM.btnMian.addEventListener('click', startMian);
   DOM.inputMian.addEventListener('keydown', e => { if (e.key === 'Enter') startMian(); });
@@ -1268,14 +1262,6 @@ function init() {
   DOM.btnGoExport.addEventListener('click', () => {
     scrollToEl(DOM.btnExport, 'center');
     focusSoft(DOM.btnExport);
-  });
-
-  // 步骤轨跳转 + 每步"接下来"按钮
-  document.querySelectorAll('.step-foot .btn.next[data-goto]').forEach(b => {
-    b.addEventListener('click', () => gotoStep(+b.dataset.goto));
-  });
-  document.querySelectorAll('.ex-chip[data-demo]').forEach(b => {
-    b.addEventListener('click', () => DEMOS[+b.dataset.demo]());
   });
 
   DOM.btnPlay.addEventListener('click', togglePlay);
@@ -1316,8 +1302,7 @@ function init() {
 
   renderFlow();
   updateTransport(); // 首屏也要有播放图标（否则按钮只剩文字）
-  setStatus('从第 ① 步开始：填一句谜面，或直接跑一个示例。', true,
-    { label: '示例：十八口 → 杏', fn: loadDemo });
+  setStatus('从第 ① 步开始：填一句谜面，然后点「载入」。想先看效果就点页头的示例。', true);
 }
 
 document.addEventListener('DOMContentLoaded', init);
