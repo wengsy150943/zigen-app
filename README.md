@@ -11,6 +11,8 @@
 - **偏旁点选**：按笔画/偏旁/其他分类点选字根，支持笔画数筛选
 - **谜材检索**：导入谜材词语（成语、地名等），根据字根匹配含对应字的词语
 - **谜材管理**：导入/导出/删除谜材分组，支持拖拽和文件选择
+- **离合动画工坊**（`web/`，独立网页版）：把谜面拆字 → 合并 → 生成**透明背景的两行动画**（APNG / GIF / SVG），
+  直接双击 `web/index.html` 就能用（纯 HTML/CSS/JS，无框架、无构建、无 CDN）
 
 ## 技术栈
 
@@ -32,7 +34,15 @@ zigen-app/
 ├── scripts/                     # Python 数据处理脚本
 │   ├── recursive_decompose.py   # 递归展开拆字
 │   ├── invert_index.py          # 构建倒排索引
-│   └── gen_json.py              # 生成 JSON 数据
+│   ├── gen_json.py              # 生成 JSON 数据
+│   └── gen_web_data.py          # 生成网页版拆字库 web/data/decomp.js
+├── web/                         # 离合动画工坊（独立网页版，双击 index.html 可用）
+│   ├── index.html               # 页面结构 + 样式（三步引导）
+│   ├── app.js                   # 交互与状态推导
+│   ├── studio.js / engine.js    # 制作流程（可 Node 测）+ 确定性时间轴
+│   ├── apng.js / gif.js / svg.js# 零依赖编码器与渲染
+│   ├── data/decomp.js           # 拆字库（由 scripts/gen_web_data.py 生成）
+│   └── test/                    # 六套测试（Node 直跑）
 ├── data/                        # 索引数据（生成产物）
 │   ├── data.json                # 合并的完整数据
 │   ├── all.json / jt.json / ft.json / strokes.json
